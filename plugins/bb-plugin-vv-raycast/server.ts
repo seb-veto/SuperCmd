@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { quicklinkSchema, type Quicklink } from './quicklink-schema';
+import { noteHandlers } from './note-server';
 import { resolveQuicklink } from './quicklinks';
 import { calculate } from './calculator';
 import { contract, hostContract, commandSchema, chatSchema, type Chat, type SavedCommand } from './contract';
@@ -77,7 +78,9 @@ export default function plugin(bb: BbPluginApi) {
     return config.primaryHostId;
   }
   const searchFiles = async (query: string) => host.call('files', { query }, { hostId: await hostId() });
+  const notes = noteHandlers(bb);
   bb.rpc.register(contract, {
+    ...notes,
     state: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: true });
       const personalProjectId = projects.find(project => project.kind === 'personal')?.id;
@@ -120,6 +123,7 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.cli.register({ name: 'vv-raycast', summary: 'Search local files, calculate, and inspect Raycast AI commands', commands: [
     { name: 'commands', summary: 'List saved AI commands', usage: 'bb vv-raycast commands [--json]' },
+    { name: 'notes', summary: 'Search active note titles and content without opening them', usage: 'bb vv-raycast notes [query] [--json]' },
     { name: 'quicklinks', summary: 'List saved Quicklinks without opening them', usage: 'bb vv-raycast quicklinks [--json]' },
     { name: 'chats', summary: 'List saved chat bindings', usage: 'bb vv-raycast chats [--json]' },
     { name: 'calculate', summary: 'Calculate arithmetic or convert units', usage: 'bb vv-raycast calculate "10ft in m" [--json]' },
@@ -127,13 +131,16 @@ export default function plugin(bb: BbPluginApi) {
   ], run: async argv => {
     const args = argv.filter(arg => arg !== '--json');
     if (args[0] === 'calculate' && args.length > 1) return { exitCode: 0, stdout: JSON.stringify(calculate(args.slice(1).join(' '))) };
+    if (args[0] === 'notes') { const query = args.slice(1).join(' '); return query.length <= 200 ? { exitCode: 0, stdout: JSON.stringify(notes.noteList({ query, deleted: false, offset: 0 })) } : { exitCode: 1, stderr: 'Note search is limited to200 characters.' }; }
     if (args[0] === 'files') return { exitCode: 0, stdout: JSON.stringify(await searchFiles(args.slice(1).join(' '))) };
     if (args.length !== 1 || !['commands', 'chats', 'quicklinks'].includes(args[0])) return { exitCode: 1, stderr: 'Usage: bb vv-raycast commands|chats|quicklinks [--json]' };
     return { exitCode: 0, stdout: JSON.stringify(args[0] === 'commands' ? commandSummaries() : args[0] === 'quicklinks' ? quicklinks() : chats()) };
   } });
+  bb.agents.registerTool({ name: 'vv_raycast_notes', description: 'Search active note titles and content; returns at most50 metadata records, not full note bodies. Does not open or change notes.', parameters: z.object({ query: z.string().max(200) }), execute: async ({ query }) => { const result = notes.noteList({ query, deleted: false, offset: 0 }); return JSON.stringify({ notes: result.notes.slice(0, 50), truncated: result.more || result.notes.length > 50 }); } });
+  bb.agents.registerTool({ name: 'vv_raycast_note', description: 'Read the Markdown of one saved Raycast note by its exact ID. Use only for a note relevant to the user request. Does not edit notes, copy to the clipboard or start another AI conversation.', parameters: z.object({ id: z.string().uuid() }), execute: async ({ id }) => JSON.stringify(notes.noteGet({ id })) });
   bb.agents.registerTool({ name: 'vv_raycast_quicklinks', description: 'List saved Quicklinks and their explicit argument templates. Does not open destinations or read clipboard content.', parameters: z.object({ query: z.string().max(200).default('') }), execute: async ({ query }) => { const found = quicklinks().filter(link => `${link.title} ${link.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase())); return JSON.stringify({ quicklinks: found.slice(0, 50), truncated: found.length > 50 }); } });
   bb.agents.registerTool({ name: 'vv_raycast_commands', description: 'List saved Raycast AI commands with at most 1,000 prompt characters each and an explicit truncation flag. Does not execute them.', parameters: z.object({}), execute: async () => JSON.stringify(commandSummaries()) });
   bb.agents.registerTool({ name: 'vv_raycast_calculate', description: 'Calculate arithmetic, percentages, functions or unit conversions locally. Returns null for unsupported expressions. No model execution or external requests.', parameters: z.object({ expression: z.string().max(240) }), execute: async ({ expression }) => JSON.stringify(calculate(expression)) });
   bb.agents.registerTool({ name: 'vv_raycast_files', description: 'Find up to 50 local indexed file names in the enrolled primary Mac home folder. Returns metadata only; respects hidden-file and ignore rules. Does not read file contents or open files.', parameters: z.object({ query: z.string().max(200) }), execute: async ({ query }) => JSON.stringify(await searchFiles(query)) });
-  bb.agents.configure(() => ({ tools: ['vv_raycast_quicklinks', 'vv_raycast_commands', 'vv_raycast_calculate', 'vv_raycast_files'], skills: ['vv-raycast'] }));
+  bb.agents.configure(() => ({ tools: ['vv_raycast_notes', 'vv_raycast_note', 'vv_raycast_quicklinks', 'vv_raycast_commands', 'vv_raycast_calculate', 'vv_raycast_files'], skills: ['vv-raycast'] }));
 }

@@ -18,11 +18,13 @@ import { QuickSubmitBridge, QuickSubmitContext } from './quick-submit-bridge';
 import { ChatSettingsBridge, ChatSettingsContext } from './chat-settings';
 import { isQuicklinkDraft, quicklinkFields, type Quicklink } from './quicklinks';
 import { QuicklinkEditor, QuicklinkArguments, QuicklinkDelete } from './quicklink-views';
+import { NotesWorkspace } from './notes-workspace';
+import type { NoteSummary } from './note-autosave';
 import './style.css';
 
 const remember = (key: string, value: string) => { try { localStorage.setItem(`vv-raycast:${key}`, value); } catch {} };
 const restore = (key: string, fallback = '') => { try { return localStorage.getItem(`vv-raycast:${key}`) ?? fallback; } catch { return fallback; } };
-type View = 'root' | 'chat' | 'quick' | 'commands' | 'edit' | 'history' | 'files' | 'quicklinks' | 'quicklink-edit';
+type View = 'root' | 'chat' | 'quick' | 'commands' | 'edit' | 'history' | 'files' | 'quicklinks' | 'quicklink-edit' | 'notes';
 function Raycast() {
   const rpc = useRpc<typeof contract>();
   const [quickIntent, setQuickIntent] = useState<QuickIntent | null>(null);
@@ -31,6 +33,8 @@ function Raycast() {
   const [quicklinkDraft, setQuicklinkDraft] = useState<Quicklink | null>(null), [quicklinkPrompt, setQuicklinkPrompt] = useState<Quicklink | null>(null), [quicklinkDelete, setQuicklinkDelete] = useState<Quicklink | null>(null);
   const [quicklinkReturn, setQuicklinkReturn] = useState<'root' | 'quicklinks'>('root');
   const [quicklinkTag, setQuicklinkTag] = useState('');
+  const [noteTarget, setNoteTarget] = useState<{ id?: string; create?: boolean; search?: boolean; key: string }>({ key: 'initial' });
+  const [noteResults, setNoteResults] = useState<NoteSummary[]>([]), [noteSearchVersion, setNoteSearchVersion] = useState(0);
   const [apps, setApps] = useState<CommandInfo[]>([]), [error, setError] = useState('');
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
   const [calculation, setCalculation] = useState<Calculation | null>(null), [files, setFiles] = useState<FileResult[]>([]);
@@ -77,6 +81,13 @@ function Raycast() {
   const report = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
   const refresh = useCallback(async () => { const result = await rpc.call('state'); setState(result); setLoaded(true); }, [rpc]);
   useEffect(() => { refresh().catch(report); rpc.call('apps').then(result => setApps(result.map(app => ({ ...app, category: 'app' }))), report); }, [rpc, refresh, report]);
+  useRealtime('notesChanged', () => setNoteSearchVersion(value => value + 1));
+  useEffect(() => {
+    if (view !== 'root') { setNoteResults([]); return; }
+    let cancelled = false;
+    const timer = setTimeout(() => { rpc.call('noteList', { query: query.slice(0, 200), deleted: false, offset: 0 }).then(result => { if (!cancelled) setNoteResults(result.notes); }, report); }, 180);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [rpc, query, view, noteSearchVersion, report]);
   useRealtime('changed', () => { refresh().catch(report); });
   useEffect(() => {
     setCalculation(null); setFiles([]); setFileError(''); setNotice(''); setFileSearchBusy(false); setFileIndexing(false); setFileIndexLimited(false);
@@ -172,6 +183,7 @@ function Raycast() {
     finally { setBusy(false); }
   }
   const quicklinkItems: CommandInfo[] = state.quicklinks.filter(link => (view !== 'root' || !link.hidden) && (view !== 'quicklinks' || !quicklinkTag || link.tags.includes(quicklinkTag))).map(link => ({ id: `quicklink:${link.id}`, title: link.title, subtitle: link.tags.join(' · ') || link.link, category: 'quicklink', quicklink: link }));
+  function openNotes(id?: string, create = false, search = false) { setNoteTarget({ ...(id ? { id } : {}), create, search, key: crypto.randomUUID() }); go('notes'); }
   const fileItems: CommandInfo[] = files.map(file => ({ id: `file:${file.id}`, title: file.title, subtitle: file.subtitle, category: 'file', path: file.path, file }));
   const catalog: CommandInfo[] = view === 'quicklinks' ? quicklinkItems : view === 'history' ? state.chats.map(chat => ({ id: `chat:${chat.id}`, title: chat.title, subtitle: 'AI Chat', category: 'extension' })) : view === 'files' ? fileItems : [
     ...(view === 'root' && calculation ? [{ id: 'calculator', title: calculation.result, category: 'calculator' as const }] : []),
@@ -181,16 +193,20 @@ function Raycast() {
       { id: 'commands', title: 'Search AI Commands', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '⌘' },
       { id: 'create', title: 'Create AI Command', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '＋' },
       { id: 'history', title: 'Search AI Chats', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '◷' },
+      { id: 'notes', title: 'Raycast Notes', subtitle: 'Notes', category: 'extension' as const, iconEmoji: '▤' },
+      { id: 'create-note', title: 'Create Note', subtitle: 'Notes', category: 'extension' as const, iconEmoji: '＋' },
+      { id: 'search-notes', title: 'Search Notes', subtitle: 'Notes', category: 'extension' as const, iconEmoji: '⌕' },
       { id: 'quicklinks', title: 'Search Quicklinks', subtitle: 'Quicklinks', category: 'extension' as const, iconEmoji: '↗' },
       { id: 'create-quicklink', title: 'Create Quicklink', subtitle: 'Quicklinks', category: 'extension' as const, iconEmoji: '＋' },
       { id: 'files', title: 'Search Files', subtitle: 'File Search', category: 'extension' as const, iconEmoji: '⌕' },
     ] : []),
     ...state.commands.map(command => ({ id: `command:${command.id}`, title: command.title, subtitle: 'AI Command', category: 'extension' as const })),
     ...(view === 'root' ? quicklinkItems : []),
+    ...(view === 'root' ? noteResults.map(note => ({ id: `note:${note.id}`, title: note.title, subtitle: 'Note', category: 'note' as const, note })) : []),
     ...(view === 'root' ? apps.map(app => ({ ...app, iconDataUrl: appIcons[app.path ?? ''] ?? undefined })) : []),
     ...(view === 'root' ? fileItems : []),
   ];
-  const filtered = catalog.filter(item => ['file', 'calculator'].includes(item.category) || `${item.title} ${item.subtitle ?? ''}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id)) || Number(b.quicklink?.pinned ?? false) - Number(a.quicklink?.pinned ?? false));
+  const filtered = catalog.filter(item => ['file', 'calculator', 'note'].includes(item.category) || `${item.title} ${item.subtitle ?? ''}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id)) || Number(b.quicklink?.pinned ?? false) - Number(a.quicklink?.pinned ?? false));
   const item = filtered[selected];
   async function copy(text: string) { if (!await experimental_copyToClipboard({ text })) throw new Error('Clipboard is unavailable.'); setNotice('Copied to clipboard'); }
   async function openFile(file: FileResult, reveal = false) {
@@ -201,7 +217,8 @@ function Raycast() {
   }
   async function run(command: CommandInfo) {
     if (busy) return;
-    if (command.quicklink) { if (quicklinkFields(command.quicklink.link).length) { setError(''); setQuicklinkPrompt(command.quicklink); } else await openQuicklink(command.quicklink); }
+    if (command.note) openNotes(command.note.id);
+    else if (command.quicklink) { if (quicklinkFields(command.quicklink.link).length) { setError(''); setQuicklinkPrompt(command.quicklink); } else await openQuicklink(command.quicklink); }
     else if (command.category === 'calculator' && calculation) { await copy(calculation.result).catch(report); }
     else if (command.file) { await openFile(command.file).catch(() => {}); }
     else if (command.category === 'app' && command.path) {
@@ -211,6 +228,9 @@ function Raycast() {
     else if (command.id === 'commands') go('commands');
     else if (command.id === 'create') edit();
     else if (command.id === 'history') go('history');
+    else if (command.id === 'notes') openNotes();
+    else if (command.id === 'search-notes') openNotes(undefined, false, true);
+    else if (command.id === 'create-note') openNotes(undefined, true);
     else if (command.id === 'quicklinks') go('quicklinks');
     else if (command.id === 'create-quicklink') editQuicklink();
     else if (command.id === 'files') { go('files'); setFileDetails(true); }
@@ -255,7 +275,7 @@ function Raycast() {
     { id: 'reveal-file', title: 'Show in Finder', shortcut: 'Cmd+Enter', execute: () => openFile(item.file!, true) },
     { id: 'copy-path', title: 'Copy File Path', execute: () => copy(item.file!.path) },
     { id: 'details', title: fileDetails && view === 'files' ? 'Hide Details' : 'Show File Details', execute: () => { setFileDetails(previous => view === 'files' ? !previous : true); if (view !== 'files') setSelected(fileItems.findIndex(row => row.id === item.id)); setView('files'); } },
-  ] : item && !['edit', 'quicklink-edit'].includes(view) ? [
+  ] : item && !['edit', 'quicklink-edit', 'notes'].includes(view) ? [
     { id: 'open', title: item.category === 'app' ? 'Open Application' : 'Open Command', shortcut: 'Enter', execute: () => run(item) },
     { id: 'favorite', title: favorites.includes(item.id) ? 'Remove from Favorites' : 'Add to Favorites', shortcut: 'Cmd+F', execute: () => setFavorites(previous => previous.includes(item.id) ? previous.filter(id => id !== item.id) : [...previous, item.id]) },
     ...(item.id.startsWith('command:') ? [{ id: 'edit', title: 'Edit AI Command', shortcut: 'Cmd+E', execute: () => edit(state.commands.find(row => row.id === item.id.slice(8))) }] : []),
@@ -263,7 +283,7 @@ function Raycast() {
   ] : [];
   const visibleActions = actions.filter(action => action.title.toLocaleLowerCase().includes(actionQuery.toLocaleLowerCase()));
   function keyDown(event: KeyboardEvent) {
-    if (rename !== null || quicklinkPrompt || quicklinkDelete) return;
+    if (view === 'notes' || rename !== null || quicklinkPrompt || quicklinkDelete) return;
     if (event.nativeEvent === popupEscape.current) return;
     if (event.defaultPrevented) return;
     if (view === 'chat' && (event.metaKey || event.ctrlKey) && /^[0-9]$/.test(event.key)) {
@@ -300,7 +320,7 @@ function Raycast() {
   function updateDraft(value: SavedCommand) { setDraft(value); remember(`command:${value.id}`, JSON.stringify(value)); }
   function hasOpenPopup() { return Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')).some(element => element !== results.current && !element.closest('[inert], [aria-hidden="true"], [data-state="closed"]') && element.getClientRects().length > 0); }
   function captureKeyDown(event: KeyboardEvent) {
-    if (rename !== null || quicklinkPrompt || quicklinkDelete) return;
+    if (view === 'notes' || rename !== null || quicklinkPrompt || quicklinkDelete) return;
     if (view === 'chat' && ['Meta', 'Control'].includes(event.key)) setHistoryShortcuts(true);
     const historyJump = view === 'chat' && (event.metaKey || event.ctrlKey) && /^[0-9]$/.test(event.key);
     const shortcut = (event.metaKey || event.ctrlKey) && ['k', 'j', 'n'].includes(event.key.toLowerCase());
@@ -310,10 +330,10 @@ function Raycast() {
     if ((historyJump && !popupOpen) || shortcut || (conversation && event.key === 'Escape' && !popupOpen)) { keyDown(event); if (event.defaultPrevented) event.stopPropagation(); }
   }
   return <div className={`vv-raycast-page ${theme}`} onKeyDown={keyDown} onKeyDownCapture={captureKeyDown}>
-    <section className={`rc-window ${view === 'chat' ? 'rc-chat-window' : view === 'quick' ? 'rc-quick-window' : ''}`} aria-label="Raycast launcher">
+    <section className={`rc-window ${view === 'chat' ? 'rc-chat-window' : view === 'quick' ? 'rc-quick-window' : view === 'notes' ? 'rc-notes-window' : ''}`} aria-label="Raycast launcher">
       {view === 'chat' && chatSidebar && <ChatSidebar groups={historyGroups} query={historyQuery} onQuery={setHistoryQuery} archived={historyArchived} onArchived={setHistoryArchived} shortcuts={historyShortcuts} selected={active} onSelect={chat => { setActive(chat.id); setChatFocus(value => value + 1); }} onNew={() => newChat()} onHide={() => setChatSidebar(false)} onActions={chat => { setActive(chat.id); setActionIndex(0); setMenu(true); }} />}
       <div className="rc-window-content">
-      <header className="rc-search">
+      {view !== 'notes' && <header className="rc-search">
         {view === 'root' && <Icon name="vv-raycast/mark" className="rc-search-mark" aria-hidden="true" />}
         {view !== 'root' && <button aria-label={view === 'quicklink-edit' && quicklinkReturn === 'quicklinks' ? 'Back to Quicklinks' : 'Back to Root Search'} title={view === 'quicklink-edit' && quicklinkReturn === 'quicklinks' ? 'Back to Quicklinks' : 'Back to Root Search'} aria-description="Click or press Escape to return. Unsaved Quicklink edits are retained." onClick={() => go(view === 'quicklink-edit' ? quicklinkReturn : 'root')}>‹</button>}
         {view === 'chat' && !chatSidebar && <button title="Show chat history" aria-label="Show chat history" onClick={() => setChatSidebar(true)}><Icon name="PanelLeft" className="rc-icon" /></button>}
@@ -321,7 +341,7 @@ function Raycast() {
         {view === 'quick' && <button className="rc-continue-chat" title="Continue in AI Chat" aria-description="Click or press Command J to expand this conversation." onClick={() => go('chat')}>AI Chat <kbd>⌘ J</kbd></button>}
         {conversation && <><button title="Start new chat" aria-label="Start new chat" onClick={() => newChat('', view === 'quick' ? 'quick' : 'chat')}><Icon name="Edit" className="rc-icon" /></button><button ref={settingsButton} disabled={Boolean(chat && (!chat.threadId || chat.unavailable)) || (needsInput && !inputReady)} title="Chat settings" aria-label="Chat settings" aria-expanded={settingsOpen} aria-controls="rc-chat-settings" aria-description="Click or press Enter to change the model. Escape closes settings." onClick={() => setSettingsOpen(value => !value)}><Icon name="SlidersHorizontal" className="rc-icon" /></button></>}
         {view === 'root' && <button className="rc-quick-ai" title={query.trim() ? 'Ask Quick AI' : 'Open Quick AI'} aria-label={query.trim() ? 'Ask Quick AI' : 'Open Quick AI'} aria-description="Click or press Tab to ask BB. With no text, opens an empty draft." onClick={() => newChat(query, 'quick', true)}>Quick AI <kbd>⇥</kbd></button>}
-      </header>
+      </header>}
       {view === 'quicklinks' && <div className="rc-quicklink-tools"><label>Tags <select aria-label="Filter Quicklinks by tag" value={quicklinkTag} onChange={event => { setQuicklinkTag(event.target.value); setSelected(0); }}><option value="">All Tags</option>{[...new Set(state.quicklinks.flatMap(link => link.tags))].sort().map(tag => <option key={tag}>{tag}</option>)}</select></label><button title="Create Quicklink" aria-description="Opens a blank editor. Save stores the shortcut without opening its destination." onClick={() => editQuicklink()}>Create Quicklink <kbd>＋</kbd></button></div>}
       {error && <div className="rc-error" role="alert">{error} <button title="Refresh saved state" onClick={() => refresh().then(() => { setError(''); if (view === 'root' || view === 'files') { setSelected(0); setSearchRevision(value => value + 1); search.current?.focus(); } }).catch(report)}>Refresh</button></div>}
       {['root', 'commands', 'history', 'files', 'quicklinks'].includes(view) && <div className="rc-search-body"><div ref={results} id="rc-results" role="listbox" aria-label={view === 'files' ? 'Files' : view === 'quicklinks' ? 'Quicklinks' : 'Commands'} className="rc-results">
@@ -336,6 +356,7 @@ function Raycast() {
           {needsInput && !inputReady ? <form className="rc-command-input" onSubmit={event => { event.preventDefault(); setInputReady(true); setChatFocus(value => value + 1); }}><label>Input text<textarea autoFocus aria-label="AI Command input" value={commandInput} onChange={event => setCommandInput(event.target.value)} /><small>Only text entered here is shared.</small></label><button type="submit" title="Prepare AI Command" aria-description="Click or press Enter to prepare the prompt. Send starts BB execution.">Continue</button></form> : <div className="rc-compose-slot"><QuickSubmitContext.Provider value={quickIntent}><NewThreadComposer initialPrompt={needsInput ? seed.replaceAll('{selection}', commandInput) : seed} draftKey={`vv-raycast-composer:${composerId}`} defaultProjectId={state.personalProjectId} defaultProviderId="codex" defaultModel="gpt-6.1-sol" defaultReasoningLevel="medium" defaultServiceTier="default" defaultPermissionMode="auto" placeholder="Ask AI anything…" layout="document" focusRequest={chatFocus} onSubmit={send} /></QuickSubmitContext.Provider></div>}
         </div>}
       </div></ChatSettingsContext.Provider>}
+      {view === 'notes' && <NotesWorkspace key={noteTarget.key} initialId={noteTarget.id} create={noteTarget.create} search={noteTarget.search} onClose={() => go('root')} />}
       {view === 'quicklink-edit' && quicklinkDraft && <QuicklinkEditor key={`${quicklinkDraft.id}:${quicklinkDraft.revision}`} draft={quicklinkDraft} latest={state.quicklinks.find(link => link.id === quicklinkDraft.id)} apps={apps} busy={busy} change={updateQuicklink} save={async () => { if (await saveQuicklink(quicklinkDraft)) { setQuicklinkDraft(null); go('quicklinks'); } }} />}
       {view === 'edit' && draft && <form className="rc-form" onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); event.currentTarget.requestSubmit(); } }} onSubmit={async event => { event.preventDefault(); if (busy) return; setBusy(true); try { await rpc.call('saveCommand', draft); remember(`command:${draft.id}`, 'null'); await refresh(); go('commands'); } catch (cause) { report(cause); } finally { setBusy(false); } }}>
         <label>Name<input autoFocus required maxLength={100} value={draft.title} onChange={event => updateDraft({ ...draft, title: event.target.value })} /></label>
@@ -343,7 +364,7 @@ function Raycast() {
         <p>Use {'{selection}'} for text you enter when opening this command. Running it opens a draft; Send starts BB execution.</p>
         <button type="submit" title="Save AI Command" aria-description="Click or press Command Enter to save this prompt." disabled={busy}>{busy ? 'Saving…' : draft.revision ? 'Save Command' : 'Create Command'}</button>
       </form>}
-      <footer className="rc-footer" role="status"><Icon name="vv-raycast/mark" className="rc-logo" aria-hidden="true" /><small>{notice || (conversation ? 'BB server' : view === 'files' ? 'Names only · Home · Local index' : view === 'quicklink-edit' ? '⌘ ↵ Save · Esc Back' : item?.category === 'calculator' ? '↵ Copy Answer' : view === 'root' ? '↑↓ Navigate · ↵ Open · Tab Ask AI' : '↑↓ Navigate · ↵ Open')}</small>{(actions.length > 0 || (view === 'root' && query) || view === 'quicklink-edit') && <div className="rc-footer-actions">{view === 'quicklink-edit' && <button type="submit" form="rc-quicklink-form" title="Save Quicklink" aria-description="Click or press Command or Control Enter to save this shortcut without opening its destination." disabled={busy}>{busy ? 'Saving…' : 'Save Quicklink'} <kbd>⌘ ↵</kbd></button>}{view === 'root' && query && <button title="Ask AI" aria-description="Click or press Tab to submit this question to BB." onClick={() => newChat(query, 'quick', true)}>Ask AI <kbd>⇥</kbd></button>}{actions.length > 0 && <button title="Show Actions" onClick={() => { setActionIndex(0); setMenu(true); }}>Actions <kbd>⌘ K</kbd></button>}</div>}</footer>
+      {view !== 'notes' && <footer className="rc-footer" role="status"><Icon name="vv-raycast/mark" className="rc-logo" aria-hidden="true" /><small>{notice || (conversation ? 'BB server' : view === 'files' ? 'Names only · Home · Local index' : view === 'quicklink-edit' ? '⌘ ↵ Save · Esc Back' : item?.category === 'calculator' ? '↵ Copy Answer' : view === 'root' ? '↑↓ Navigate · ↵ Open · Tab Ask AI' : '↑↓ Navigate · ↵ Open')}</small>{(actions.length > 0 || (view === 'root' && query) || view === 'quicklink-edit') && <div className="rc-footer-actions">{view === 'quicklink-edit' && <button type="submit" form="rc-quicklink-form" title="Save Quicklink" aria-description="Click or press Command or Control Enter to save this shortcut without opening its destination." disabled={busy}>{busy ? 'Saving…' : 'Save Quicklink'} <kbd>⌘ ↵</kbd></button>}{view === 'root' && query && <button title="Ask AI" aria-description="Click or press Tab to submit this question to BB." onClick={() => newChat(query, 'quick', true)}>Ask AI <kbd>⇥</kbd></button>}{actions.length > 0 && <button title="Show Actions" onClick={() => { setActionIndex(0); setMenu(true); }}>Actions <kbd>⌘ K</kbd></button>}</div>}</footer>}
       </div>
       {quicklinkPrompt && <QuicklinkArguments key={quicklinkPrompt.id} link={quicklinkPrompt} error={error} busy={busy} close={() => { setQuicklinkPrompt(null); search.current?.focus(); }} open={values => openQuicklink(quicklinkPrompt, values)} />}
       {quicklinkDelete && <QuicklinkDelete link={quicklinkDelete} error={error} busy={busy} close={() => { setQuicklinkDelete(null); search.current?.focus(); }} remove={async () => { if (busy) return; setBusy(true); try { await rpc.call('deleteQuicklink', { id: quicklinkDelete.id, revision: quicklinkDelete.revision }); remember(`quicklink:${quicklinkDelete.id}`, 'null'); setQuicklinkDelete(null); await refresh(); } catch (cause) { report(cause); } finally { setBusy(false); } }} />}

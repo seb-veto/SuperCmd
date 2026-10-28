@@ -1,5 +1,6 @@
 import { defineRpcContract, type NewThreadRequest } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+import { noteContract } from './note-schema';
 import { quicklinkSchema } from './quicklink-schema';
 const id = z.string().min(1).max(200);
 export const commandSchema = z.object({ id: z.string().uuid(), title: z.string().trim().min(1).max(100), prompt: z.string().trim().min(1).max(12000), revision: z.number().int().nonnegative() });
@@ -29,6 +30,7 @@ export const hostContract = defineRpcContract({
   openFile: { input: z.object({ id: z.string().uuid(), reveal: z.boolean() }), output: z.object({ opened: z.boolean() }) },
 });
 export const contract = defineRpcContract({
+  ...noteContract,
   state: { input: z.null(), output: z.object({ commands: z.array(commandSchema), quicklinks: z.array(quicklinkSchema), chats: z.array(chatSchema), personalProjectId: z.string().optional(), projects: z.array(z.object({ id: z.string(), name: z.string() })) }) },
   saveCommand: { input: commandSchema, output: commandSchema },
   saveQuicklink: { input: quicklinkSchema, output: quicklinkSchema },
