@@ -14,6 +14,7 @@ import { ChatSidebar } from './chat-sidebar';
 import { experimental_Icon as Icon } from '@get-bb/plugin-sdk/app';
 import { createQuickIntent, type QuickIntent } from './quick-submit';
 import { QuickSubmitBridge, QuickSubmitContext } from './quick-submit-bridge';
+import { ChatSettingsBridge, ChatSettingsContext } from './chat-settings';
 import './style.css';
 
 const remember = (key: string, value: string) => { try { localStorage.setItem(`vv-raycast:${key}`, value); } catch {} };
@@ -41,6 +42,10 @@ function Raycast() {
   const [inputReady, setInputReady] = useState(() => restore('input-ready') === 'true');
   const [needsInput, setNeedsInput] = useState(() => restore('needs-input') === 'true');
   const [chatSidebar, setChatSidebar] = useState(() => restore('chat-sidebar', 'open') !== 'closed');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTarget, setSettingsTarget] = useState<HTMLDivElement | null>(null);
+  const settingsButton = useRef<HTMLButtonElement>(null);
+  const closeSettings = useCallback(() => { setSettingsOpen(false); settingsButton.current?.focus(); }, []);
   const [chatFocus, setChatFocus] = useState(0), [rename, setRename] = useState<string | null>(null);
   const renameDialog = useRef<HTMLDialogElement>(null);
   const popupEscape = useRef<Event | null>(null);
@@ -112,7 +117,7 @@ function Raycast() {
   }, [rpc, apps.length, query, view]);
   const conversation = view === 'chat' || view === 'quick';
   const closeMenu = () => { setMenu(false); setActionQuery(''); if (conversation) setChatFocus(value => value + 1); else search.current?.focus(); };
-  function go(next: View) { if (next !== 'quick' && next !== 'chat') { quickIntent?.cancel(); setQuickIntent(null); } setMenu(false); setView(next); setQuery(''); setSelected(0); setError(''); }
+  function go(next: View) { if (next !== 'quick' && next !== 'chat') { quickIntent?.cancel(); setQuickIntent(null); } setSettingsOpen(false); setMenu(false); setView(next); setQuery(''); setSelected(0); setError(''); }
   function newChat(prompt = '', surface: 'chat' | 'quick' = 'chat', submit = false) { const id = crypto.randomUUID(); quickIntent?.cancel(); setQuickIntent(submit ? createQuickIntent(id, prompt, report) : null); setActive(null); setSeed(prompt); setDraft(null); setNeedsInput(false); setCommandInput(''); setInputReady(false); setComposerId(id); go(surface); }
   function edit(command?: SavedCommand) {
     const fresh = command ?? { id: crypto.randomUUID(), title: '', prompt: '', revision: 0 };
@@ -201,7 +206,7 @@ function Raycast() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n' && conversation) { event.preventDefault(); newChat('', view === 'quick' ? 'quick' : 'chat'); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j' && view === 'quick') { event.preventDefault(); go('chat'); return; }
     if (menu) return;
-    if (event.key === 'Escape') { event.preventDefault(); if (query) setQuery(''); else go('root'); search.current?.focus(); return; }
+    if (event.key === 'Escape') { event.preventDefault(); if (settingsOpen) { closeSettings(); return; } if (query) setQuery(''); else go('root'); search.current?.focus(); return; }
     if (event.target !== search.current) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setSelected(previous => Math.max(0, Math.min(filtered.length - 1, previous + (event.key === 'ArrowDown' ? 1 : -1)))); }
     if (event.key === 'Enter' && item) { event.preventDefault(); if ((event.metaKey || event.ctrlKey) && item.file) void openFile(item.file, true).catch(() => {}); else void run(item); }
@@ -239,7 +244,7 @@ function Raycast() {
         {view === 'chat' && !chatSidebar && <button title="Show chat history" aria-label="Show chat history" onClick={() => setChatSidebar(true)}><Icon name="PanelLeft" className="rc-icon" /></button>}
         {['root', 'commands', 'history', 'files'].includes(view) ? <input ref={search} role="combobox" aria-label={view === 'root' ? 'Search for apps or commands' : view === 'commands' ? 'Search AI Commands' : view === 'files' ? 'Search files and folders' : 'Search AI Chats'} aria-expanded="true" aria-controls="rc-results" aria-activedescendant={item ? `rc-${selected}` : undefined} placeholder={view === 'root' ? 'Search for apps or commands…' : view === 'commands' ? 'Search AI Commands…' : view === 'files' ? 'Search files and folders…' : 'Search AI Chats…'} value={query} onChange={event => { setQuery(event.target.value); setSelected(0); }} /> : <div className="rc-chat-heading"><strong>{conversation ? view === 'quick' ? 'Quick AI' : chat?.title || 'New Chat' : draft?.revision ? 'Edit AI Command' : 'Create AI Command'}</strong>{conversation && chat?.model && <small>{chat.model}</small>}</div>}
         {view === 'quick' && <button className="rc-continue-chat" title="Continue in AI Chat" aria-description="Click or press Command J to expand this conversation." onClick={() => go('chat')}>AI Chat <kbd>⌘ J</kbd></button>}
-        {conversation && <><button title="Start new chat" aria-label="Start new chat" onClick={() => newChat('', view === 'quick' ? 'quick' : 'chat')}><Icon name="Edit" className="rc-icon" /></button><button title="Show chat actions" aria-label="Show chat actions" onClick={() => { setActionIndex(0); setMenu(true); }}><Icon name="SlidersHorizontal" className="rc-icon" /></button></>}
+        {conversation && <><button title="Start new chat" aria-label="Start new chat" onClick={() => newChat('', view === 'quick' ? 'quick' : 'chat')}><Icon name="Edit" className="rc-icon" /></button><button ref={settingsButton} disabled={Boolean(chat && (!chat.threadId || chat.unavailable)) || (needsInput && !inputReady)} title="Chat settings" aria-label="Chat settings" aria-expanded={settingsOpen} aria-controls="rc-chat-settings" aria-description="Click or press Enter to change the model. Escape closes settings." onClick={() => setSettingsOpen(value => !value)}><Icon name="SlidersHorizontal" className="rc-icon" /></button></>}
         {view === 'root' && <button className="rc-quick-ai" title={query.trim() ? 'Ask Quick AI' : 'Open Quick AI'} aria-label={query.trim() ? 'Ask Quick AI' : 'Open Quick AI'} aria-description="Click or press Tab to ask BB. With no text, opens an empty draft." onClick={() => newChat(query, 'quick', true)}>Quick AI <kbd>⇥</kbd></button>}
       </header>
       {error && <div className="rc-error" role="alert">{error} <button title="Refresh saved state" onClick={() => refresh().then(() => { setError(''); if (view === 'root' || view === 'files') { setSelected(0); setSearchRevision(value => value + 1); search.current?.focus(); } }).catch(report)}>Refresh</button></div>}
@@ -250,11 +255,11 @@ function Raycast() {
         {(fileSearchBusy || fileIndexing) && <p className="rc-search-status" role="status">{fileIndexing ? 'Indexing local files… Results update automatically.' : 'Searching files…'}</p>}{fileIndexLimited && <p className="rc-search-status" role="status">File index limit reached. Some files may be missing.</p>}{fileError && <p className="rc-search-status" role="alert">File Search: {fileError}</p>}
         {loaded && !filtered.length && !fileSearchBusy && !fileIndexing && <div className="rc-empty">{view === 'files' ? query ? 'No matching indexed files' : 'No recently used indexed files' : 'No results found.'}{view !== 'files' && <button title="Create AI Command" onClick={() => edit()}>Create AI Command</button>}</div>}
       </div>{view === 'files' && fileDetails && <aside className="rc-file-details" aria-label="File details">{item?.file ? <><div className="rc-file-detail-icon" aria-hidden="true">{item.file.directory ? '📁' : '📄'}</div><h2>{item.file.title}</h2><dl><dt>Where</dt><dd>{item.file.subtitle}</dd><dt>Kind</dt><dd>{item.file.directory ? 'Folder' : item.file.title.split('.').length > 1 ? item.file.title.split('.').pop()?.toUpperCase() + ' file' : 'File'}</dd><dt>Size</dt><dd>{item.file.directory ? '—' : new Intl.NumberFormat().format(item.file.size) + ' bytes'}</dd><dt>Created</dt><dd>{item.file.createdAt > 0 ? new Date(item.file.createdAt).toLocaleString() : '—'}</dd><dt>Modified</dt><dd>{new Date(item.file.modifiedAt).toLocaleString()}</dd></dl></> : <p>Select a file</p>}</aside>}</div>}
-      {conversation && <div className="rc-chat">
+      {conversation && <ChatSettingsContext.Provider value={{ target: settingsOpen ? settingsTarget : null, environmentId: chat?.environmentId, close: closeSettings, report }}><div ref={setSettingsTarget} className="rc-settings-mount" /><div className="rc-chat">
         {chat?.threadId && !chat.unavailable ? <ThreadChat className="rc-bb-chat" key={chat.threadId} threadId={chat.threadId} variant="compact" layout="contained" permissionPolicy="inherit" focusRequest={chatFocus} /> : chat ? <p role="alert">{chat.unavailable ? 'This BB conversation is unavailable. Refresh before continuing.' : chat.error ?? 'Creation is unconfirmed.'} Your saved chat binding is retained.</p> : loaded && <div className="rc-new-chat"><div className="rc-ai-mark">✦</div><h1>How can I help you?</h1>
           {needsInput && !inputReady ? <form className="rc-command-input" onSubmit={event => { event.preventDefault(); setInputReady(true); setChatFocus(value => value + 1); }}><label>Input text<textarea autoFocus aria-label="AI Command input" value={commandInput} onChange={event => setCommandInput(event.target.value)} /><small>Only text entered here is shared.</small></label><button type="submit" title="Prepare AI Command" aria-description="Click or press Enter to prepare the prompt. Send starts BB execution.">Continue</button></form> : <div className="rc-compose-slot"><QuickSubmitContext.Provider value={quickIntent}><NewThreadComposer initialPrompt={needsInput ? seed.replaceAll('{selection}', commandInput) : seed} draftKey={`vv-raycast-composer:${composerId}`} defaultProjectId={state.personalProjectId} defaultProviderId="codex" defaultModel="gpt-6.1-sol" defaultReasoningLevel="medium" defaultServiceTier="default" defaultPermissionMode="auto" placeholder="Ask AI anything…" layout="document" focusRequest={chatFocus} onSubmit={send} /></QuickSubmitContext.Provider></div>}
         </div>}
-      </div>}
+      </div></ChatSettingsContext.Provider>}
       {view === 'edit' && draft && <form className="rc-form" onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); event.currentTarget.requestSubmit(); } }} onSubmit={async event => { event.preventDefault(); if (busy) return; setBusy(true); try { await rpc.call('saveCommand', draft); remember(`command:${draft.id}`, 'null'); await refresh(); go('commands'); } catch (cause) { report(cause); } finally { setBusy(false); } }}>
         <label>Name<input autoFocus required maxLength={100} value={draft.title} onChange={event => updateDraft({ ...draft, title: event.target.value })} /></label>
         <label>Prompt<textarea required maxLength={12000} rows={7} value={draft.prompt} onChange={event => updateDraft({ ...draft, prompt: event.target.value })} /></label>
@@ -268,4 +273,4 @@ function Raycast() {
     </section>
   </div>;
 }
-export default definePluginApp(app => { app.composer.customize({ id: 'quick-submit', scopes: ['new-thread'], banners: [{ id: 'intent', chrome: 'bare', component: QuickSubmitBridge }] }); app.slots.navPanel({ id: 'launcher', title: 'Raycast', icon: 'vv-raycast/mark', path: 'launcher', component: Raycast }); });
+export default definePluginApp(app => { app.composer.customize({ id: 'chat-settings', scopes: ['thread', 'new-thread'], banners: [{ id: 'settings', chrome: 'bare', component: ChatSettingsBridge }] }); app.composer.customize({ id: 'quick-submit', scopes: ['new-thread'], banners: [{ id: 'intent', chrome: 'bare', component: QuickSubmitBridge }] }); app.slots.navPanel({ id: 'launcher', title: 'Raycast', icon: 'vv-raycast/mark', path: 'launcher', component: Raycast }); });

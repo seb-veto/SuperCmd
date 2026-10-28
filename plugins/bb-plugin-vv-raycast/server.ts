@@ -14,7 +14,7 @@ export default function plugin(bb: BbPluginApi) {
     if (!chat.threadId) return chat;
     const thread = await bb.sdk.threads.get({ threadId: chat.threadId });
     const options = await bb.sdk.threads.defaultExecutionOptions({ threadId: chat.threadId }).catch(() => null);
-    return { ...chat, title: thread.title || thread.titleFallback || chat.title, model: options?.model ?? chat.model, createdAt: thread.createdAt, pinned: thread.pinnedAt !== null, archived: thread.archivedAt !== null, unavailable: thread.deletedAt !== null };
+    return { ...chat, ...(thread.environmentId ? { environmentId: thread.environmentId } : {}), title: thread.title || thread.titleFallback || chat.title, model: options?.model ?? chat.model, createdAt: thread.createdAt, pinned: thread.pinnedAt !== null, archived: thread.archivedAt !== null, unavailable: thread.deletedAt !== null };
   }
   function saveCommand(value: SavedCommand) {
     const command = commandSchema.parse(value);

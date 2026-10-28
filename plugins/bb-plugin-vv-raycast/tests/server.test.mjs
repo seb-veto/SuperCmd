@@ -64,9 +64,11 @@ test('chat actions operate only on owned bindings and read native BB state', asy
     assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'rename', title: 'Renamed' })).title, 'Renamed');
     assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'archive' })).archived, true);
     native.title = 'Changed from native BB';
+    native.environmentId = 'native-environment';
     const state = await harness.behavior.callRpc('state', null);
     assert.equal(state.chats[0].title, native.title);
     assert.equal(state.chats[0].model, 'native-current-model');
+    assert.equal(state.chats[0].environmentId, native.environmentId);
     assert.equal(state.chats[0].pinned, true);
     assert.equal(state.chats[0].archived, true);
   } finally { await harness.lifecycle.dispose(); }
