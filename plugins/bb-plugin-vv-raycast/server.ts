@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+import { calculate } from './calculator';
 import { contract, hostContract, commandSchema, chatSchema, type Chat, type SavedCommand } from './contract';
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -54,6 +55,7 @@ export default function plugin(bb: BbPluginApi) {
     if (!config.primaryHostId) throw new Error('VV has no initialized local host.');
     return config.primaryHostId;
   }
+  const searchFiles = async (query: string) => host.call('files', { query }, { hostId: await hostId() });
   bb.rpc.register(contract, {
     state: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: true });
@@ -76,18 +78,27 @@ export default function plugin(bb: BbPluginApi) {
     apps: async () => host.call('apps', null, { hostId: await hostId() }),
     appIcon: async input => host.call('appIcon', input, { hostId: await hostId() }),
     openApp: async input => host.call('openApp', input, { hostId: await hostId() }),
+    files: ({ query }) => searchFiles(query),
+    openFile: async input => host.call('openFile', input, { hostId: await hostId() }),
+    calculate: ({ expression }) => calculate(expression),
   });
   for (const event of ['thread.idle', 'thread.active', 'thread.failed', 'thread.archived', 'thread.unarchived', 'thread.deleted'] as const) {
     bb.events.on(event, ({ thread }) => { if (chats().some(chat => chat.threadId === thread.id)) bb.realtime.publish('changed', {}); });
   }
-  bb.cli.register({ name: 'vv-raycast', summary: 'Inspect Raycast AI commands and BB chat bindings', commands: [
+  bb.cli.register({ name: 'vv-raycast', summary: 'Search local files, calculate, and inspect Raycast AI commands', commands: [
     { name: 'commands', summary: 'List saved AI commands', usage: 'bb vv-raycast commands [--json]' },
     { name: 'chats', summary: 'List saved chat bindings', usage: 'bb vv-raycast chats [--json]' },
+    { name: 'calculate', summary: 'Calculate arithmetic or convert units', usage: 'bb vv-raycast calculate "10ft in m" [--json]' },
+    { name: 'files', summary: 'Search local indexed file names', usage: 'bb vv-raycast files [query] [--json]' },
   ], run: async argv => {
     const args = argv.filter(arg => arg !== '--json');
+    if (args[0] === 'calculate' && args.length > 1) return { exitCode: 0, stdout: JSON.stringify(calculate(args.slice(1).join(' '))) };
+    if (args[0] === 'files') return { exitCode: 0, stdout: JSON.stringify(await searchFiles(args.slice(1).join(' '))) };
     if (args.length !== 1 || !['commands', 'chats'].includes(args[0])) return { exitCode: 1, stderr: 'Usage: bb vv-raycast commands|chats [--json]' };
     return { exitCode: 0, stdout: JSON.stringify(args[0] === 'commands' ? commandSummaries() : chats()) };
   } });
   bb.agents.registerTool({ name: 'vv_raycast_commands', description: 'List saved Raycast AI commands with at most 1,000 prompt characters each and an explicit truncation flag. Does not execute them.', parameters: z.object({}), execute: async () => JSON.stringify(commandSummaries()) });
-  bb.agents.configure(() => ({ tools: ['vv_raycast_commands'], skills: ['vv-raycast'] }));
+  bb.agents.registerTool({ name: 'vv_raycast_calculate', description: 'Calculate arithmetic, percentages, functions or unit conversions locally. Returns null for unsupported expressions. No model execution or external requests.', parameters: z.object({ expression: z.string().max(240) }), execute: async ({ expression }) => JSON.stringify(calculate(expression)) });
+  bb.agents.registerTool({ name: 'vv_raycast_files', description: 'Find up to 50 local indexed file names in the enrolled primary Mac home folder. Returns metadata only; respects hidden-file and ignore rules. Does not read file contents or open files.', parameters: z.object({ query: z.string().max(200) }), execute: async ({ query }) => JSON.stringify(await searchFiles(query)) });
+  bb.agents.configure(() => ({ tools: ['vv_raycast_commands', 'vv_raycast_calculate', 'vv_raycast_files'], skills: ['vv-raycast'] }));
 }

@@ -614,6 +614,7 @@ const electronAPI = {
     protectedTopLevelDirectories: string[];
     includeProtectedHomeRoots: boolean;
     lastError: string | null;
+    limitReached: boolean;
   }> => ipcRenderer.invoke('file-search-status'),
   refreshFileSearchIndex: (reason?: string): Promise<{
     indexing: boolean;
@@ -627,6 +628,7 @@ const electronAPI = {
     protectedTopLevelDirectories: string[];
     includeProtectedHomeRoots: boolean;
     lastError: string | null;
+    limitReached: boolean;
   }> => ipcRenderer.invoke('file-search-refresh', reason),
 
   // Get system appearance (dark/light)

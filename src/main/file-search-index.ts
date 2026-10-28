@@ -33,6 +33,7 @@ export type FileSearchIndexStatus = {
   protectedTopLevelDirectories: string[];
   includeProtectedHomeRoots: boolean;
   lastError: string | null;
+  limitReached: boolean;
 };
 
 type IndexedEntry = {
@@ -336,6 +337,8 @@ async function buildIndexSnapshot(homeDir: string): Promise<IndexSnapshot> {
     pathToEntryId: new Map<string, number>(),
     builtAt: Date.now(),
   };
+  // Initial searches can use partial results while the first scan continues.
+  if (!activeIndex) activeIndex = snapshot;
 
   const walkQueue: DirectoryQueueEntry[] = includeRoots.map((root) => ({
     scanPath: root,
@@ -609,6 +612,7 @@ function ensureConfigured(inputHomeDir?: string): void {
   configuredHomeDir = nextHome;
   includeRoots = resolveIncludeRoots(configuredHomeDir);
 }
+export { ensureConfigured as configureFileSearchIndex };
 
 export function getFileSearchIndexStatus(): FileSearchIndexStatus {
   return {
@@ -623,6 +627,7 @@ export function getFileSearchIndexStatus(): FileSearchIndexStatus {
     protectedTopLevelDirectories: [...FILE_SEARCH_INDEX_PROTECTED_HOME_TOP_LEVEL_DIRECTORIES],
     includeProtectedHomeRoots,
     lastError: lastIndexError,
+    limitReached: (activeIndex?.entries.length ?? 0) >= MAX_INDEX_ENTRIES,
   };
 }
 
@@ -884,8 +889,9 @@ export function stopFileSearchIndexing(): void {
 
 export async function searchIndexedFiles(
   rawQuery: string,
-  options?: { limit?: number }
+  options?: { limit?: number; includeProtectedHomeRoots?: boolean }
 ): Promise<IndexedFileSearchResult[]> {
+  if (typeof options?.includeProtectedHomeRoots === 'boolean') includeProtectedHomeRoots = options.includeProtectedHomeRoots;
   const trimmedQuery = String(rawQuery || '').trim();
   const pathLikeQuery = isPathLikeQuery(trimmedQuery);
   const normalizedQuery = normalizeSearchText(rawQuery);

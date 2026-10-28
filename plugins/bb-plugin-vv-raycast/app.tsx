@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { NewThreadRequest } from '@get-bb/plugin-sdk';
-import { definePluginApp, useRpc, useRealtime, ThreadChat, experimental_NewThreadComposer as NewThreadComposer } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, useRpc, useRealtime, ThreadChat, experimental_copyToClipboard, experimental_NewThreadComposer as NewThreadComposer } from '@get-bb/plugin-sdk/app';
+import type { Calculation } from './calculator';
+import type { FileResult } from './files';
+import LauncherCalculatorCard from './vendor/LauncherCalculatorCard';
 import type { contract, Chat, SavedCommand } from './contract';
 import type { CommandInfo } from './types';
 import type { LauncherAction } from './command-helpers';
@@ -13,12 +16,16 @@ import './style.css';
 
 const remember = (key: string, value: string) => { try { localStorage.setItem(`vv-raycast:${key}`, value); } catch {} };
 const restore = (key: string, fallback = '') => { try { return localStorage.getItem(`vv-raycast:${key}`) ?? fallback; } catch { return fallback; } };
-type View = 'root' | 'chat' | 'quick' | 'commands' | 'edit' | 'history';
+type View = 'root' | 'chat' | 'quick' | 'commands' | 'edit' | 'history' | 'files';
 function Raycast() {
   const rpc = useRpc<typeof contract>();
   const [state, setState] = useState<{ commands: SavedCommand[]; chats: Chat[]; personalProjectId?: string }>({ commands: [], chats: [] });
   const [apps, setApps] = useState<CommandInfo[]>([]), [error, setError] = useState('');
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
+  const [calculation, setCalculation] = useState<Calculation | null>(null), [files, setFiles] = useState<FileResult[]>([]);
+  const [fileIndexing, setFileIndexing] = useState(false), [fileIndexLimited, setFileIndexLimited] = useState(false);
+  const [fileSearchBusy, setFileSearchBusy] = useState(false), [fileError, setFileError] = useState(''), [notice, setNotice] = useState('');
+  const [fileDetails, setFileDetails] = useState(false), [searchRevision, setSearchRevision] = useState(0);
   const iconRequests = useRef(new Map<string, Promise<string | null>>());
   const results = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(() => { const saved = restore('view'); return saved === 'chat' || saved === 'quick' ? saved : 'root'; });
@@ -40,6 +47,28 @@ function Raycast() {
   const refresh = useCallback(async () => { const result = await rpc.call('state'); setState(result); setLoaded(true); }, [rpc]);
   useEffect(() => { refresh().catch(report); rpc.call('apps').then(result => setApps(result.map(app => ({ ...app, category: 'app' }))), report); }, [rpc, refresh, report]);
   useRealtime('changed', () => { refresh().catch(report); });
+  useEffect(() => {
+    setCalculation(null); setFiles([]); setFileError(''); setNotice(''); setFileSearchBusy(false); setFileIndexing(false); setFileIndexLimited(false);
+    if (!['root', 'files'].includes(view)) return;
+    const expression = query.trim();
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => {
+      if (view === 'root' && expression.length <= 240) rpc.call('calculate', { expression }).then(value => { if (!cancelled) setCalculation(value); }, report);
+      if ((view === 'files' || expression.length >= 2) && expression.length <= 200) {
+        setFileSearchBusy(true);
+        const find = () => {
+          rpc.call('files', { query: expression }).then(value => {
+            if (cancelled) return;
+            setFiles(value.files); setFileIndexing(value.indexing); setFileIndexLimited(value.indexLimited); setFileSearchBusy(false);
+            if (value.indexing) retry = setTimeout(find, 1500);
+          }, cause => { if (!cancelled) { setFileError(cause instanceof Error ? cause.message : String(cause)); setFileSearchBusy(false); setFileIndexing(false); } });
+        };
+        find();
+      }
+    }, 180);
+    return () => { cancelled = true; clearTimeout(timer); clearTimeout(retry); };
+  }, [query, view, rpc, report, searchRevision]);
   useEffect(() => { remember('view', view); }, [view]);
   useEffect(() => { remember('chat', active ?? ''); }, [active]);
   useEffect(() => { remember('composer-id', composerId); }, [composerId]);
@@ -59,7 +88,7 @@ function Raycast() {
     return () => { if (dialog?.open) dialog.close(); };
   }, [rename !== null]);
   useEffect(() => { if (menu) { setActionQuery(''); setActionIndex(0); panel.current?.querySelector('input')?.focus(); } }, [menu]);
-  useEffect(() => { if (['root', 'commands', 'history'].includes(view)) search.current?.focus(); }, [view]);
+  useEffect(() => { if (['root', 'commands', 'history', 'files'].includes(view)) search.current?.focus(); }, [view]);
   useEffect(() => { rows.current[selected]?.scrollIntoView({ block: 'nearest' }); }, [selected]);
   useEffect(() => {
     if (!results.current) return;
@@ -86,28 +115,42 @@ function Raycast() {
     try { const saved = JSON.parse(restore(`command:${fresh.id}`, 'null')); setDraft(saved?.id === fresh.id && typeof saved.title === 'string' && typeof saved.prompt === 'string' && Number.isInteger(saved.revision) ? saved : fresh); } catch { setDraft(fresh); }
     go('edit');
   }
-  const catalog: CommandInfo[] = view === 'history' ? state.chats.map(chat => ({ id: `chat:${chat.id}`, title: chat.title, subtitle: 'AI Chat', category: 'extension' })) : [
+  const fileItems: CommandInfo[] = files.map(file => ({ id: `file:${file.id}`, title: file.title, subtitle: file.subtitle, category: 'file', path: file.path, file }));
+  const catalog: CommandInfo[] = view === 'history' ? state.chats.map(chat => ({ id: `chat:${chat.id}`, title: chat.title, subtitle: 'AI Chat', category: 'extension' })) : view === 'files' ? fileItems : [
+    ...(view === 'root' && calculation ? [{ id: 'calculator', title: calculation.result, category: 'calculator' as const }] : []),
     ...(view === 'root' ? [
       { id: 'ai', title: 'AI Chat', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '✦' },
       { id: 'quick-ai', title: 'Quick AI', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '✦' },
       { id: 'commands', title: 'Search AI Commands', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '⌘' },
       { id: 'create', title: 'Create AI Command', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '＋' },
       { id: 'history', title: 'Search AI Chats', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '◷' },
+      { id: 'files', title: 'Search Files', subtitle: 'File Search', category: 'extension' as const, iconEmoji: '⌕' },
     ] : []),
     ...state.commands.map(command => ({ id: `command:${command.id}`, title: command.title, subtitle: 'AI Command', category: 'extension' as const })),
     ...(view === 'root' ? apps.map(app => ({ ...app, iconDataUrl: appIcons[app.path ?? ''] ?? undefined })) : []),
+    ...(view === 'root' ? fileItems : []),
   ];
-  const filtered = catalog.filter(item => `${item.title} ${item.subtitle ?? ''}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id)));
+  const filtered = catalog.filter(item => ['file', 'calculator'].includes(item.category) || `${item.title} ${item.subtitle ?? ''}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id)));
   const item = filtered[selected];
+  async function copy(text: string) { if (!await experimental_copyToClipboard({ text })) throw new Error('Clipboard is unavailable.'); setNotice('Copied to clipboard'); }
+  async function openFile(file: FileResult, reveal = false) {
+    setBusy(true); setError('');
+    try { await rpc.call('openFile', { id: file.id, reveal }); }
+    catch (cause) { report(cause); throw cause; }
+    finally { setBusy(false); }
+  }
   async function run(command: CommandInfo) {
     if (busy) return;
-    if (command.category === 'app' && command.path) {
+    if (command.category === 'calculator' && calculation) { await copy(calculation.result).catch(report); }
+    else if (command.file) { await openFile(command.file).catch(() => {}); }
+    else if (command.category === 'app' && command.path) {
       setBusy(true); try { await rpc.call('openApp', { path: command.path }); } catch (cause) { report(cause); } finally { setBusy(false); }
     } else if (command.id === 'ai') newChat(query);
     else if (command.id === 'quick-ai') newChat('', 'quick');
     else if (command.id === 'commands') go('commands');
     else if (command.id === 'create') edit();
     else if (command.id === 'history') go('history');
+    else if (command.id === 'files') { go('files'); setFileDetails(true); }
     else if (command.id.startsWith('chat:')) { setActive(command.id.slice(5)); go('chat'); }
     else if (command.id.startsWith('command:')) {
       const saved = state.commands.find(row => row.id === command.id.slice(8));
@@ -131,6 +174,14 @@ function Raycast() {
       { id: 'archive-chat', title: chat.archived ? 'Restore Chat' : 'Archive Chat', execute: () => chatAction(chat.archived ? 'unarchive' : 'archive') },
     ] : []),
     { id: 'appearance', title: 'Toggle Appearance', separatorBefore: true, execute: () => setTheme(previous => previous === 'dark' ? 'light' : 'dark') },
+  ] : item?.category === 'calculator' && calculation ? [
+    { id: 'copy', title: 'Copy Answer', shortcut: 'Enter', execute: () => copy(calculation.result) },
+    { id: 'copy-expression', title: 'Copy Question and Answer', execute: () => copy(`${calculation.input} = ${calculation.result}`) },
+  ] : item?.file ? [
+    { id: 'open-file', title: item.file.directory ? 'Open Folder' : 'Open File', shortcut: 'Enter', execute: () => openFile(item.file!) },
+    { id: 'reveal-file', title: 'Show in Finder', shortcut: 'Cmd+Enter', execute: () => openFile(item.file!, true) },
+    { id: 'copy-path', title: 'Copy File Path', execute: () => copy(item.file!.path) },
+    { id: 'details', title: fileDetails && view === 'files' ? 'Hide Details' : 'Show File Details', execute: () => { setFileDetails(previous => view === 'files' ? !previous : true); if (view !== 'files') setSelected(fileItems.findIndex(row => row.id === item.id)); setView('files'); } },
   ] : item && view !== 'edit' ? [
     { id: 'open', title: item.category === 'app' ? 'Open Application' : 'Open Command', shortcut: 'Enter', execute: () => run(item) },
     { id: 'favorite', title: favorites.includes(item.id) ? 'Remove from Favorites' : 'Add to Favorites', shortcut: 'Cmd+F', execute: () => setFavorites(previous => previous.includes(item.id) ? previous.filter(id => id !== item.id) : [...previous, item.id]) },
@@ -142,17 +193,17 @@ function Raycast() {
     if (rename !== null) return;
     if (event.nativeEvent === popupEscape.current) return;
     if (event.defaultPrevented) return;
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && ['root', 'commands', 'history', 'chat', 'quick'].includes(view)) { event.preventDefault(); if (menu) closeMenu(); else { setActionIndex(0); setMenu(true); } return; }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && ['root', 'commands', 'history', 'chat', 'quick', 'files'].includes(view)) { event.preventDefault(); if (menu) closeMenu(); else { setActionIndex(0); setMenu(true); } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n' && conversation) { event.preventDefault(); newChat('', view === 'quick' ? 'quick' : 'chat'); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j' && view === 'quick') { event.preventDefault(); go('chat'); return; }
     if (menu) return;
     if (event.key === 'Escape') { event.preventDefault(); if (query) setQuery(''); else go('root'); search.current?.focus(); return; }
     if (event.target !== search.current) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setSelected(previous => Math.max(0, Math.min(filtered.length - 1, previous + (event.key === 'ArrowDown' ? 1 : -1)))); }
-    if (event.key === 'Enter' && item) { event.preventDefault(); void run(item); }
+    if (event.key === 'Enter' && item) { event.preventDefault(); if ((event.metaKey || event.ctrlKey) && item.file) void openFile(item.file, true).catch(() => {}); else void run(item); }
     if (event.key === 'Tab' && view === 'root' && !event.shiftKey) { event.preventDefault(); newChat(query, 'quick'); }
     if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) { event.preventDefault(); const command = filtered[Number(event.key) - 1]; if (command) void run(command); }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f' && item) { event.preventDefault(); void actions[1].execute(); }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { const favorite = actions.find(action => action.id === 'favorite'); if (favorite) { event.preventDefault(); void favorite.execute(); } }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e' && item?.id.startsWith('command:')) { event.preventDefault(); edit(state.commands.find(row => row.id === item.id.slice(8))); }
   }
   async function send(request: NewThreadRequest) {
@@ -182,18 +233,19 @@ function Raycast() {
         {view === 'root' && <Icon name="vv-raycast/mark" className="rc-search-mark" aria-hidden="true" />}
         {view !== 'root' && <button aria-label="Back to Root Search" title="Back to Root Search" onClick={() => go('root')}>‹</button>}
         {view === 'chat' && !chatSidebar && <button title="Show chat history" aria-label="Show chat history" onClick={() => setChatSidebar(true)}><Icon name="PanelLeft" className="rc-icon" /></button>}
-        {['root', 'commands', 'history'].includes(view) ? <input ref={search} role="combobox" aria-label={view === 'root' ? 'Search for apps or commands' : view === 'commands' ? 'Search AI Commands' : 'Search AI Chats'} aria-expanded="true" aria-controls="rc-results" aria-activedescendant={item ? `rc-${selected}` : undefined} placeholder={view === 'root' ? 'Search for apps or commands…' : view === 'commands' ? 'Search AI Commands…' : 'Search AI Chats…'} value={query} onChange={event => { setQuery(event.target.value); setSelected(0); }} /> : <div className="rc-chat-heading"><strong>{conversation ? view === 'quick' ? 'Quick AI' : chat?.title || 'New Chat' : draft?.revision ? 'Edit AI Command' : 'Create AI Command'}</strong>{conversation && chat?.model && <small>{chat.model}</small>}</div>}
+        {['root', 'commands', 'history', 'files'].includes(view) ? <input ref={search} role="combobox" aria-label={view === 'root' ? 'Search for apps or commands' : view === 'commands' ? 'Search AI Commands' : view === 'files' ? 'Search files and folders' : 'Search AI Chats'} aria-expanded="true" aria-controls="rc-results" aria-activedescendant={item ? `rc-${selected}` : undefined} placeholder={view === 'root' ? 'Search for apps or commands…' : view === 'commands' ? 'Search AI Commands…' : view === 'files' ? 'Search files and folders…' : 'Search AI Chats…'} value={query} onChange={event => { setQuery(event.target.value); setSelected(0); }} /> : <div className="rc-chat-heading"><strong>{conversation ? view === 'quick' ? 'Quick AI' : chat?.title || 'New Chat' : draft?.revision ? 'Edit AI Command' : 'Create AI Command'}</strong>{conversation && chat?.model && <small>{chat.model}</small>}</div>}
         {view === 'quick' && <button className="rc-continue-chat" title="Continue in AI Chat" aria-description="Click or press Command J to expand this conversation." onClick={() => go('chat')}>AI Chat <kbd>⌘ J</kbd></button>}
         {conversation && <><button title="Start new chat" aria-label="Start new chat" onClick={() => newChat('', view === 'quick' ? 'quick' : 'chat')}><Icon name="Edit" className="rc-icon" /></button><button title="Show chat actions" aria-label="Show chat actions" onClick={() => { setActionIndex(0); setMenu(true); }}><Icon name="SlidersHorizontal" className="rc-icon" /></button></>}
         {view === 'root' && <button className="rc-quick-ai" title="Open Quick AI" aria-label="Open Quick AI" onClick={() => newChat(query, 'quick')}>Quick AI <kbd>⇥</kbd></button>}
       </header>
-      {error && <div className="rc-error" role="alert">{error} <button title="Refresh saved state" onClick={() => refresh().then(() => setError('')).catch(report)}>Refresh</button></div>}
-      {['root', 'commands', 'history'].includes(view) && <div ref={results} id="rc-results" role="listbox" aria-label="Commands" className="rc-results">
-        <div className="rc-section">{query ? 'Results' : view === 'root' ? 'Suggestions' : view === 'history' ? 'AI Chats' : 'AI Commands'}</div>
+      {error && <div className="rc-error" role="alert">{error} <button title="Refresh saved state" onClick={() => refresh().then(() => { setError(''); if (view === 'root' || view === 'files') { setSelected(0); setSearchRevision(value => value + 1); search.current?.focus(); } }).catch(report)}>Refresh</button></div>}
+      {['root', 'commands', 'history', 'files'].includes(view) && <div className="rc-search-body"><div ref={results} id="rc-results" role="listbox" aria-label={view === 'files' ? 'Files' : 'Commands'} className="rc-results">
+        <div className="rc-section">{query ? 'Results' : view === 'root' ? 'Suggestions' : view === 'history' ? 'AI Chats' : view === 'files' ? 'Recently Used' : 'AI Commands'}</div>
         {!loaded && <p role="status">Loading…</p>}
-        {filtered.map((command, index) => <div key={command.id} role="presentation" data-app-path={command.path}>{command.category === 'app' && filtered[index - 1]?.category !== 'app' && <div className="rc-section">Applications</div>}<LauncherCommandRow command={command} flatIndex={index} selected={selected === index} itemRef={element => { rows.current[index] = element; if (element) element.id = `rc-${index}`; }} commandAlias="" commandHotkey="" onClick={() => { setSelected(index); void run(command); }} onContextMenu={event => { event.preventDefault(); setSelected(index); setActionIndex(0); setMenu(true); }} t={key => key} /></div>)}
-        {loaded && !filtered.length && <div className="rc-empty">No results found.<button title="Create AI Command" onClick={() => edit()}>Create AI Command</button></div>}
-      </div>}
+        {filtered.map((command, index) => <div key={command.id} role="presentation" data-app-path={command.category === 'app' ? command.path : undefined}>{command.category === 'app' && filtered[index - 1]?.category !== 'app' && <div className="rc-section">Applications</div>}{command.category === 'file' && filtered[index - 1]?.category !== 'file' && <div className="rc-section">Files</div>}{command.category === 'calculator' && calculation ? <LauncherCalculatorCard result={calculation} selected={selected === index} itemRef={element => { rows.current[index] = element; if (element) element.id = `rc-${index}`; }} onCopy={() => void copy(calculation.result).catch(report)} t={key => key.endsWith('pressEnterToCopy') ? 'Press Enter to copy' : key.endsWith('clickToCopy') ? 'Click to copy' : 'Copy'} /> : <LauncherCommandRow command={command} flatIndex={index} selected={selected === index} itemRef={element => { rows.current[index] = element; if (element) element.id = `rc-${index}`; }} commandAlias="" commandHotkey="" onClick={() => { setSelected(index); void run(command); }} onContextMenu={event => { event.preventDefault(); setSelected(index); setActionIndex(0); setMenu(true); }} t={key => key} />}</div>)}
+        {(fileSearchBusy || fileIndexing) && <p className="rc-search-status" role="status">{fileIndexing ? 'Indexing local files… Results update automatically.' : 'Searching files…'}</p>}{fileIndexLimited && <p className="rc-search-status" role="status">File index limit reached. Some files may be missing.</p>}{fileError && <p className="rc-search-status" role="alert">File Search: {fileError}</p>}
+        {loaded && !filtered.length && !fileSearchBusy && !fileIndexing && <div className="rc-empty">{view === 'files' ? query ? 'No matching indexed files' : 'No recently used indexed files' : 'No results found.'}{view !== 'files' && <button title="Create AI Command" onClick={() => edit()}>Create AI Command</button>}</div>}
+      </div>{view === 'files' && fileDetails && <aside className="rc-file-details" aria-label="File details">{item?.file ? <><div className="rc-file-detail-icon" aria-hidden="true">{item.file.directory ? '📁' : '📄'}</div><h2>{item.file.title}</h2><dl><dt>Where</dt><dd>{item.file.subtitle}</dd><dt>Kind</dt><dd>{item.file.directory ? 'Folder' : item.file.title.split('.').length > 1 ? item.file.title.split('.').pop()?.toUpperCase() + ' file' : 'File'}</dd><dt>Size</dt><dd>{item.file.directory ? '—' : new Intl.NumberFormat().format(item.file.size) + ' bytes'}</dd><dt>Created</dt><dd>{item.file.createdAt > 0 ? new Date(item.file.createdAt).toLocaleString() : '—'}</dd><dt>Modified</dt><dd>{new Date(item.file.modifiedAt).toLocaleString()}</dd></dl></> : <p>Select a file</p>}</aside>}</div>}
       {conversation && <div className="rc-chat">
         {chat?.threadId && !chat.unavailable ? <ThreadChat className="rc-bb-chat" key={chat.threadId} threadId={chat.threadId} variant="compact" layout="contained" permissionPolicy="inherit" focusRequest={chatFocus} /> : chat ? <p role="alert">{chat.unavailable ? 'This BB conversation is unavailable. Refresh before continuing.' : chat.error ?? 'Creation is unconfirmed.'} Your saved chat binding is retained.</p> : loaded && <div className="rc-new-chat"><div className="rc-ai-mark">✦</div><h1>How can I help you?</h1>
           {needsInput && !inputReady ? <form className="rc-command-input" onSubmit={event => { event.preventDefault(); setInputReady(true); setChatFocus(value => value + 1); }}><label>Input text<textarea autoFocus aria-label="AI Command input" value={commandInput} onChange={event => setCommandInput(event.target.value)} /><small>Only text entered here is shared.</small></label><button type="submit" title="Prepare AI Command" aria-description="Click or press Enter to prepare the prompt. Send starts BB execution.">Continue</button></form> : <div className="rc-compose-slot"><NewThreadComposer initialPrompt={needsInput ? seed.replaceAll('{selection}', commandInput) : seed} draftKey={`vv-raycast-composer:${composerId}`} defaultProjectId={state.personalProjectId} defaultProviderId="codex" defaultModel="gpt-6.1-sol" defaultReasoningLevel="medium" defaultServiceTier="default" defaultPermissionMode="auto" placeholder="Ask AI anything…" layout="document" focusRequest={chatFocus} onSubmit={send} /></div>}
@@ -205,7 +257,7 @@ function Raycast() {
         <p>Use {'{selection}'} for text you enter when opening this command. Running it opens a draft; Send starts BB execution.</p>
         <button type="submit" title="Save AI Command" aria-description="Click or press Command Enter to save this prompt." disabled={busy}>{busy ? 'Saving…' : draft.revision ? 'Save Command' : 'Create Command'}</button>
       </form>}
-      <footer className="rc-footer"><Icon name="vv-raycast/mark" className="rc-logo" aria-hidden="true" /><small>{conversation ? 'BB server' : '↑↓ Navigate · ↵ Open · Tab Ask AI'}</small><div className="rc-footer-actions">{view === 'root' && query && <button title="Ask AI" onClick={() => newChat(query, 'quick')}>Ask AI <kbd>⇥</kbd></button>}{actions.length > 0 && <button title="Show Actions" onClick={() => { setActionIndex(0); setMenu(true); }}>Actions <kbd>⌘ K</kbd></button>}</div></footer>
+      <footer className="rc-footer" role="status"><Icon name="vv-raycast/mark" className="rc-logo" aria-hidden="true" /><small>{notice || (conversation ? 'BB server' : view === 'files' ? 'Names only · Home · Local index' : item?.category === 'calculator' ? '↵ Copy Answer' : '↑↓ Navigate · ↵ Open · Tab Ask AI')}</small><div className="rc-footer-actions">{view === 'root' && query && <button title="Ask AI" onClick={() => newChat(query, 'quick')}>Ask AI <kbd>⇥</kbd></button>}{actions.length > 0 && <button title="Show Actions" onClick={() => { setActionIndex(0); setMenu(true); }}>Actions <kbd>⌘ K</kbd></button>}</div></footer>
       </div>
       {rename !== null && <dialog ref={renameDialog} className="rc-rename-dialog" aria-label="Rename Chat" onCancel={() => { setRename(null); setChatFocus(value => value + 1); }}><form onSubmit={async event => { event.preventDefault(); if (busy) return; try { await chatAction('rename', rename); setRename(null); setChatFocus(value => value + 1); } catch {} }}><label>Chat title<input autoFocus required maxLength={100} value={rename} onChange={event => setRename(event.target.value)} /></label>{error && <p role="alert" className="rc-error">{error}</p>}<div><button type="button" title="Cancel rename" onClick={() => { setRename(null); setChatFocus(value => value + 1); }}>Cancel</button><button type="submit" title="Save chat title" disabled={busy || !rename.trim()}>Save</button></div></form></dialog>}
       {menu && <LauncherActionsOverlay actions={visibleActions} query={actionQuery} onQueryChange={value => { setActionQuery(value); setActionIndex(0); }} selectedIndex={actionIndex} setSelectedIndex={setActionIndex} overlayRef={panel as React.RefObject<HTMLDivElement>} onClose={closeMenu} onActionClick={async action => { try { await action.execute(); closeMenu(); } catch (cause) { report(cause); } }} isNativeLiquidGlass={false} isGlassyTheme={false} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Tab' || event.key === 'Escape' || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k')) { event.preventDefault(); closeMenu(); } if (visibleActions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setActionIndex(previous => (previous + (event.key === 'ArrowDown' ? 1 : visibleActions.length - 1)) % visibleActions.length); } if (event.key === 'Enter') { event.preventDefault(); const action = visibleActions[actionIndex]; if (action) void Promise.resolve(action.execute()).then(closeMenu, report); } }} />}

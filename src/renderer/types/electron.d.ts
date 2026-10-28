@@ -94,6 +94,7 @@ export interface FileSearchIndexStatus {
   protectedTopLevelDirectories: string[];
   includeProtectedHomeRoots: boolean;
   lastError: string | null;
+  limitReached: boolean;
 }
 
 export type CalendarAccessStatus =

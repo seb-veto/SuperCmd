@@ -1,1 +1,1 @@
-export type CommandInfo = { id: string; title: string; subtitle?: string; category: 'app' | 'extension'; path?: string; iconEmoji?: string; iconDataUrl?: string };
+export type CommandInfo = { id: string; title: string; subtitle?: string; category: 'app' | 'extension' | 'file' | 'calculator'; path?: string; file?: import('./files').FileResult; iconEmoji?: string; iconDataUrl?: string };
