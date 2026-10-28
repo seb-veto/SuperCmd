@@ -2,7 +2,7 @@ import { defineRpcContract, type NewThreadRequest } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 const id = z.string().min(1).max(200);
 export const commandSchema = z.object({ id: z.string().uuid(), title: z.string().trim().min(1).max(100), prompt: z.string().trim().min(1).max(12000), revision: z.number().int().nonnegative() });
-export const chatSchema = z.object({ id: z.string().uuid(), title: z.string(), threadId: z.string().nullable(), environmentId: z.string().optional(), error: z.string().optional(), fingerprint: z.string(), createdAt: z.number().default(0), model: z.string().default(''), pinned: z.boolean().default(false), archived: z.boolean().default(false), unavailable: z.boolean().optional() });
+export const chatSchema = z.object({ id: z.string().uuid(), title: z.string(), threadId: z.string().nullable(), environmentId: z.string().optional(), error: z.string().optional(), fingerprint: z.string(), createdAt: z.number().default(0), activityAt: z.number().default(0), projectId: z.string().optional(), model: z.string().default(''), pinned: z.boolean().default(false), archived: z.boolean().default(false), unavailable: z.boolean().optional() });
 export type SavedCommand = z.infer<typeof commandSchema>;
 export type Chat = z.infer<typeof chatSchema>;
 // BB remains authoritative for provider, environment, permission and attachment validation.
@@ -26,7 +26,7 @@ export const hostContract = defineRpcContract({
   openFile: { input: z.object({ id: z.string().uuid(), reveal: z.boolean() }), output: z.object({ opened: z.boolean() }) },
 });
 export const contract = defineRpcContract({
-  state: { input: z.null(), output: z.object({ commands: z.array(commandSchema), chats: z.array(chatSchema), personalProjectId: z.string().optional() }) },
+  state: { input: z.null(), output: z.object({ commands: z.array(commandSchema), chats: z.array(chatSchema), personalProjectId: z.string().optional(), projects: z.array(z.object({ id: z.string(), name: z.string() })) }) },
   saveCommand: { input: commandSchema, output: commandSchema },
   start: { input: z.object({ id: z.string().uuid(), request: requestSchema }), output: chatSchema },
   chatAction: { input: z.object({ id: z.string().uuid(), action: z.enum(['pin', 'unpin', 'archive', 'unarchive', 'rename']), title: z.string().trim().min(1).max(100).optional() }).refine(input => input.action !== 'rename' || Boolean(input.title), 'Enter a chat title'), output: chatSchema },

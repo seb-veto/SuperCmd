@@ -48,8 +48,13 @@ test('command revisions prevent stale writes and validate input', async () => {
 });
 
 test('chat actions operate only on owned bindings and read native BB state', async () => {
-  const native = makeThreadResponse({ id: 'owned-chat', title: 'Original title', pinnedAt: null, archivedAt: null });
+  const native = makeThreadResponse({ id: 'owned-chat', projectId: 'assigned', latestAttentionAt: 123456789, title: 'Original title', pinnedAt: null, archivedAt: null });
   const harness = setup(async () => native);
+  harness.sdk.stub('projects.list', async () => [
+    { id: 'personal', name: 'Personal', kind: 'personal', createdAt: 1, updatedAt: 1, gitRemoteUrl: null, sources: [] },
+    { id: 'assigned', name: 'Assigned', kind: 'standard', createdAt: 1, updatedAt: 1, gitRemoteUrl: null, sources: [] },
+    { id: 'unrelated', name: 'Unrelated', kind: 'standard', createdAt: 1, updatedAt: 1, gitRemoteUrl: null, sources: [] },
+  ]);
   harness.sdk.stub('threads.get', async ({ threadId }) => { assert.equal(threadId, native.id); return native; });
   harness.sdk.stub('threads.defaultExecutionOptions', async () => ({ model: 'native-current-model', permissionMode: 'auto', reasoningLevel: 'medium', serviceTier: 'default', source: 'client/thread/start' }));
   harness.sdk.stub('threads.pin', async ({ threadId }) => { assert.equal(threadId, native.id); native.pinnedAt = 123; return { thread: native }; });
@@ -69,6 +74,11 @@ test('chat actions operate only on owned bindings and read native BB state', asy
     assert.equal(state.chats[0].title, native.title);
     assert.equal(state.chats[0].model, 'native-current-model');
     assert.equal(state.chats[0].environmentId, native.environmentId);
+    assert.equal(state.chats[0].projectId, 'assigned');
+    assert.equal(state.chats[0].activityAt, Math.max(native.createdAt, native.latestAttentionAt));
+    assert.deepEqual(state.projects, [{ id: 'assigned', name: 'Assigned' }]);
+    native.projectId = 'personal';
+    assert.deepEqual((await harness.behavior.callRpc('state', null)).projects, []);
     assert.equal(state.chats[0].pinned, true);
     assert.equal(state.chats[0].archived, true);
   } finally { await harness.lifecycle.dispose(); }

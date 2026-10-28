@@ -14,7 +14,7 @@ export default function plugin(bb: BbPluginApi) {
     if (!chat.threadId) return chat;
     const thread = await bb.sdk.threads.get({ threadId: chat.threadId });
     const options = await bb.sdk.threads.defaultExecutionOptions({ threadId: chat.threadId }).catch(() => null);
-    return { ...chat, ...(thread.environmentId ? { environmentId: thread.environmentId } : {}), title: thread.title || thread.titleFallback || chat.title, model: options?.model ?? chat.model, createdAt: thread.createdAt, pinned: thread.pinnedAt !== null, archived: thread.archivedAt !== null, unavailable: thread.deletedAt !== null };
+    return { ...chat, ...(thread.environmentId ? { environmentId: thread.environmentId } : {}), title: thread.title || thread.titleFallback || chat.title, model: options?.model ?? chat.model, createdAt: thread.createdAt, activityAt: Math.max(thread.createdAt, thread.latestAttentionAt), projectId: thread.projectId, pinned: thread.pinnedAt !== null, archived: thread.archivedAt !== null, unavailable: thread.deletedAt !== null };
   }
   function saveCommand(value: SavedCommand) {
     const command = commandSchema.parse(value);
@@ -40,7 +40,7 @@ export default function plugin(bb: BbPluginApi) {
       return chat;
     }
     const title = input.request.input.filter(part => part.type === 'text').map(part => part.text).join(' ').trim().slice(0, 100) || 'AI Chat';
-    const chat: Chat = { id: input.id, title, threadId: null, fingerprint, createdAt: Date.now(), model: input.request.model, pinned: false, archived: false };
+    const chat: Chat = { id: input.id, title, threadId: null, fingerprint, createdAt: Date.now(), activityAt: 0, projectId: input.request.projectId, model: input.request.model, pinned: false, archived: false };
     const persist = () => db.prepare('INSERT INTO chats(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(chat.id, JSON.stringify(chat));
     persist();
     try { const thread = await bb.sdk.threads.spawn({ ...input.request, title, pluginMetadata: { raycastChatId: chat.id } }); chat.threadId = thread.id; }
@@ -61,7 +61,7 @@ export default function plugin(bb: BbPluginApi) {
       const projects = await bb.sdk.projects.list({ includePersonal: true });
       const personalProjectId = projects.find(project => project.kind === 'personal')?.id;
       const liveChats = await Promise.all(chats().map(chat => liveChat(chat).catch(() => ({ ...chat, unavailable: true }))));
-      return { commands: commands(), chats: liveChats, ...(personalProjectId ? { personalProjectId } : {}) };
+      return { commands: commands(), chats: liveChats, projects: projects.filter(project => project.kind !== 'personal' && liveChats.some(chat => chat.projectId === project.id)).map(({ id, name }) => ({ id, name })), ...(personalProjectId ? { personalProjectId } : {}) };
     },
     saveCommand,
     start: input => { const operation = queue.then(() => start(input)); queue = operation.catch(() => {}); return operation; },

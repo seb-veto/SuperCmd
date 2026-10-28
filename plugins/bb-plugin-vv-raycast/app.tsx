@@ -11,6 +11,7 @@ import type { LauncherAction } from './command-helpers';
 import LauncherCommandRow from './vendor/LauncherCommandRow';
 import LauncherActionsOverlay from './vendor/LauncherActionsOverlay';
 import { ChatSidebar } from './chat-sidebar';
+import { chatHistory, type ChatProject } from './chat-history';
 import { experimental_Icon as Icon } from '@get-bb/plugin-sdk/app';
 import { createQuickIntent, type QuickIntent } from './quick-submit';
 import { QuickSubmitBridge, QuickSubmitContext } from './quick-submit-bridge';
@@ -24,7 +25,7 @@ function Raycast() {
   const rpc = useRpc<typeof contract>();
   const [quickIntent, setQuickIntent] = useState<QuickIntent | null>(null);
   useEffect(() => () => quickIntent?.cancel(), [quickIntent]);
-  const [state, setState] = useState<{ commands: SavedCommand[]; chats: Chat[]; personalProjectId?: string }>({ commands: [], chats: [] });
+  const [state, setState] = useState<{ commands: SavedCommand[]; chats: Chat[]; personalProjectId?: string; projects: ChatProject[] }>({ commands: [], chats: [], projects: [] });
   const [apps, setApps] = useState<CommandInfo[]>([]), [error, setError] = useState('');
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
   const [calculation, setCalculation] = useState<Calculation | null>(null), [files, setFiles] = useState<FileResult[]>([]);
@@ -42,6 +43,22 @@ function Raycast() {
   const [inputReady, setInputReady] = useState(() => restore('input-ready') === 'true');
   const [needsInput, setNeedsInput] = useState(() => restore('needs-input') === 'true');
   const [chatSidebar, setChatSidebar] = useState(() => restore('chat-sidebar', 'open') !== 'closed');
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [historyArchived, setHistoryArchived] = useState(false), [historyShortcuts, setHistoryShortcuts] = useState(false);
+  const [historyNow, setHistoryNow] = useState(() => new Date());
+  useEffect(() => {
+    const next = new Date(historyNow); next.setHours(24, 0, 0, 50);
+    const timer = setTimeout(() => setHistoryNow(new Date()), Math.max(1, next.getTime() - Date.now()));
+    return () => clearTimeout(timer);
+  }, [historyNow]);
+  const historyGroups = chatHistory(state.chats, state.projects, historyQuery, historyArchived, historyNow);
+  const historyTargets = historyGroups.flatMap(group => group.buckets.flatMap(bucket => bucket.chats)).slice(0, 10);
+  useEffect(() => {
+    const clear = () => setHistoryShortcuts(false);
+    const release = (event: globalThis.KeyboardEvent) => { if (['Meta', 'Control'].includes(event.key)) clear(); };
+    window.addEventListener('keyup', release); window.addEventListener('blur', clear);
+    return () => { window.removeEventListener('keyup', release); window.removeEventListener('blur', clear); };
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTarget, setSettingsTarget] = useState<HTMLDivElement | null>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
@@ -202,6 +219,13 @@ function Raycast() {
     if (rename !== null) return;
     if (event.nativeEvent === popupEscape.current) return;
     if (event.defaultPrevented) return;
+    if (view === 'chat' && (event.metaKey || event.ctrlKey) && /^[0-9]$/.test(event.key)) {
+      if (hasOpenPopup()) return;
+      event.preventDefault();
+      const target = historyTargets[(Number(event.key) + 9) % 10];
+      if (target) { setActive(target.id); setSettingsOpen(false); setChatFocus(value => value + 1); }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && ['root', 'commands', 'history', 'chat', 'quick', 'files'].includes(view)) { event.preventDefault(); if (menu) closeMenu(); else { setActionIndex(0); setMenu(true); } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n' && conversation) { event.preventDefault(); newChat('', view === 'quick' ? 'quick' : 'chat'); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j' && view === 'quick') { event.preventDefault(); go('chat'); return; }
@@ -226,17 +250,20 @@ function Raycast() {
     finally { setBusy(false); }
   }
   function updateDraft(value: SavedCommand) { setDraft(value); remember(`command:${value.id}`, JSON.stringify(value)); }
+  function hasOpenPopup() { return Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')).some(element => element !== results.current && !element.closest('[inert], [aria-hidden="true"], [data-state="closed"]') && element.getClientRects().length > 0); }
   function captureKeyDown(event: KeyboardEvent) {
     if (rename !== null) return;
+    if (view === 'chat' && ['Meta', 'Control'].includes(event.key)) setHistoryShortcuts(true);
+    const historyJump = view === 'chat' && (event.metaKey || event.ctrlKey) && /^[0-9]$/.test(event.key);
     const shortcut = (event.metaKey || event.ctrlKey) && ['k', 'j', 'n'].includes(event.key.toLowerCase());
     // Let native pickers consume Escape before handling the enclosing conversation.
-    const popupOpen = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')).some(element => element !== results.current && !element.closest('[inert], [aria-hidden="true"], [data-state="closed"]') && element.getClientRects().length > 0);
+    const popupOpen = hasOpenPopup();
     if (event.key === 'Escape' && popupOpen) popupEscape.current = event.nativeEvent;
-    if (shortcut || (conversation && event.key === 'Escape' && !popupOpen)) { keyDown(event); if (event.defaultPrevented) event.stopPropagation(); }
+    if ((historyJump && !popupOpen) || shortcut || (conversation && event.key === 'Escape' && !popupOpen)) { keyDown(event); if (event.defaultPrevented) event.stopPropagation(); }
   }
   return <div className={`vv-raycast-page ${theme}`} onKeyDown={keyDown} onKeyDownCapture={captureKeyDown}>
     <section className={`rc-window ${view === 'chat' ? 'rc-chat-window' : view === 'quick' ? 'rc-quick-window' : ''}`} aria-label="Raycast launcher">
-      {view === 'chat' && chatSidebar && <ChatSidebar chats={state.chats} selected={active} onSelect={chat => { setActive(chat.id); setChatFocus(value => value + 1); }} onNew={() => newChat()} onHide={() => setChatSidebar(false)} onActions={chat => { setActive(chat.id); setActionIndex(0); setMenu(true); }} />}
+      {view === 'chat' && chatSidebar && <ChatSidebar groups={historyGroups} query={historyQuery} onQuery={setHistoryQuery} archived={historyArchived} onArchived={setHistoryArchived} shortcuts={historyShortcuts} selected={active} onSelect={chat => { setActive(chat.id); setChatFocus(value => value + 1); }} onNew={() => newChat()} onHide={() => setChatSidebar(false)} onActions={chat => { setActive(chat.id); setActionIndex(0); setMenu(true); }} />}
       <div className="rc-window-content">
       <header className="rc-search">
         {view === 'root' && <Icon name="vv-raycast/mark" className="rc-search-mark" aria-hidden="true" />}
