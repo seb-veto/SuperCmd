@@ -9,6 +9,12 @@ export default function plugin(bb: BbPluginApi) {
   const commands = () => (db.prepare('SELECT data FROM commands ORDER BY rowid').all() as { data: string }[]).map(row => commandSchema.parse(JSON.parse(row.data)));
   const chats = () => (db.prepare('SELECT data FROM chats ORDER BY rowid DESC LIMIT 100').all() as { data: string }[]).map(row => chatSchema.parse(JSON.parse(row.data)));
   const commandSummaries = () => commands().map(command => ({ ...command, prompt: command.prompt.slice(0, 1000), truncated: command.prompt.length > 1000 }));
+  async function liveChat(chat: Chat): Promise<Chat> {
+    if (!chat.threadId) return chat;
+    const thread = await bb.sdk.threads.get({ threadId: chat.threadId });
+    const options = await bb.sdk.threads.defaultExecutionOptions({ threadId: chat.threadId }).catch(() => null);
+    return { ...chat, title: thread.title || thread.titleFallback || chat.title, model: options?.model ?? chat.model, createdAt: thread.createdAt, pinned: thread.pinnedAt !== null, archived: thread.archivedAt !== null, unavailable: thread.deletedAt !== null };
+  }
   function saveCommand(value: SavedCommand) {
     const command = commandSchema.parse(value);
     const old = commands().find(row => row.id === command.id);
@@ -33,7 +39,7 @@ export default function plugin(bb: BbPluginApi) {
       return chat;
     }
     const title = input.request.input.filter(part => part.type === 'text').map(part => part.text).join(' ').trim().slice(0, 100) || 'AI Chat';
-    const chat: Chat = { id: input.id, title, threadId: null, fingerprint };
+    const chat: Chat = { id: input.id, title, threadId: null, fingerprint, createdAt: Date.now(), model: input.request.model, pinned: false, archived: false };
     const persist = () => db.prepare('INSERT INTO chats(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(chat.id, JSON.stringify(chat));
     persist();
     try { const thread = await bb.sdk.threads.spawn({ ...input.request, title, pluginMetadata: { raycastChatId: chat.id } }); chat.threadId = thread.id; }
@@ -52,13 +58,28 @@ export default function plugin(bb: BbPluginApi) {
     state: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: true });
       const personalProjectId = projects.find(project => project.kind === 'personal')?.id;
-      return { commands: commands(), chats: chats(), ...(personalProjectId ? { personalProjectId } : {}) };
+      const liveChats = await Promise.all(chats().map(chat => liveChat(chat).catch(() => ({ ...chat, unavailable: true }))));
+      return { commands: commands(), chats: liveChats, ...(personalProjectId ? { personalProjectId } : {}) };
     },
     saveCommand,
     start: input => { const operation = queue.then(() => start(input)); queue = operation.catch(() => {}); return operation; },
+    chatAction: async input => {
+      const row = db.prepare('SELECT data FROM chats WHERE id=?').get(input.id) as { data: string } | undefined;
+      if (!row) throw new Error('Chat is not in this Raycast workspace.');
+      const chat = chatSchema.parse(JSON.parse(row.data));
+      if (!chat.threadId) throw new Error('This chat has no confirmed BB conversation.');
+      if (input.action === 'rename') await bb.sdk.threads.update({ threadId: chat.threadId, title: input.title });
+      else await bb.sdk.threads[input.action]({ threadId: chat.threadId });
+      bb.realtime.publish('changed', {});
+      return liveChat(chat);
+    },
     apps: async () => host.call('apps', null, { hostId: await hostId() }),
+    appIcon: async input => host.call('appIcon', input, { hostId: await hostId() }),
     openApp: async input => host.call('openApp', input, { hostId: await hostId() }),
   });
+  for (const event of ['thread.idle', 'thread.active', 'thread.failed', 'thread.archived', 'thread.unarchived', 'thread.deleted'] as const) {
+    bb.events.on(event, ({ thread }) => { if (chats().some(chat => chat.threadId === thread.id)) bb.realtime.publish('changed', {}); });
+  }
   bb.cli.register({ name: 'vv-raycast', summary: 'Inspect Raycast AI commands and BB chat bindings', commands: [
     { name: 'commands', summary: 'List saved AI commands', usage: 'bb vv-raycast commands [--json]' },
     { name: 'chats', summary: 'List saved chat bindings', usage: 'bb vv-raycast chats [--json]' },

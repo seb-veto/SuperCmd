@@ -13,6 +13,8 @@ type LauncherActionsOverlayProps = {
   onActionClick: (action: LauncherAction) => void | Promise<void>;
   isNativeLiquidGlass: boolean;
   isGlassyTheme: boolean;
+  query: string;
+  onQueryChange: (query: string) => void;
 };
 
 const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
@@ -25,8 +27,9 @@ const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
   onActionClick,
   isNativeLiquidGlass,
   isGlassyTheme,
+  query,
+  onQueryChange,
 }) => {
-  if (actions.length === 0) return null;
 
   return (
     <div
@@ -36,8 +39,8 @@ const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
     >
       <div
         ref={overlayRef}
-        className="absolute bottom-12 right-3 w-96 max-h-[65vh] rounded-xl overflow-hidden flex flex-col shadow-2xl outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 focus-visible:ring-0"
-        role="menu"
+        className="rc-action-panel absolute bottom-2 right-2 max-h-[65vh] rounded-xl overflow-hidden flex flex-col shadow-2xl outline-none"
+        role="dialog"
         aria-label="Actions"
         tabIndex={0}
         onKeyDown={onKeyDown}
@@ -47,7 +50,7 @@ const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex-1 overflow-y-auto py-1">
+        <div id="rc-action-list" role="menu" aria-label="Actions" className="flex-1 overflow-y-auto py-1">
           {actions.map((action, idx) => (
             <React.Fragment key={action.id}>
               {action.separatorBefore && (
@@ -55,6 +58,7 @@ const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
               )}
               <div
                 role="menuitem"
+                id={`rc-action-${idx}`}
                 aria-label={action.title}
                 title={action.title}
                 className={`mx-1 px-2.5 py-1.5 rounded-lg border border-transparent flex items-center gap-2.5 cursor-pointer transition-colors ${
@@ -107,7 +111,9 @@ const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
               </div>
             </React.Fragment>
           ))}
+          {!actions.length && <p className="rc-no-actions">No matching actions</p>}
         </div>
+        <input className="rc-action-search" aria-label="Search actions" aria-controls="rc-action-list" aria-activedescendant={actions[selectedIndex] ? `rc-action-${selectedIndex}` : undefined} aria-description="Type to filter. Use arrow keys to choose, Enter to run, and Escape to return." placeholder="Search…" value={query} onChange={event => onQueryChange(event.target.value)} />
       </div>
     </div>
   );

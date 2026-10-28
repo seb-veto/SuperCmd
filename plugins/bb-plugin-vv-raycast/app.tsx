@@ -7,36 +7,80 @@ import type { CommandInfo } from './types';
 import type { LauncherAction } from './command-helpers';
 import LauncherCommandRow from './vendor/LauncherCommandRow';
 import LauncherActionsOverlay from './vendor/LauncherActionsOverlay';
+import { ChatSidebar } from './chat-sidebar';
+import { experimental_Icon as Icon } from '@get-bb/plugin-sdk/app';
 import './style.css';
 
 const remember = (key: string, value: string) => { try { localStorage.setItem(`vv-raycast:${key}`, value); } catch {} };
 const restore = (key: string, fallback = '') => { try { return localStorage.getItem(`vv-raycast:${key}`) ?? fallback; } catch { return fallback; } };
-type View = 'root' | 'chat' | 'commands' | 'edit' | 'history';
+type View = 'root' | 'chat' | 'quick' | 'commands' | 'edit' | 'history';
 function Raycast() {
   const rpc = useRpc<typeof contract>();
   const [state, setState] = useState<{ commands: SavedCommand[]; chats: Chat[]; personalProjectId?: string }>({ commands: [], chats: [] });
   const [apps, setApps] = useState<CommandInfo[]>([]), [error, setError] = useState('');
-  const [view, setView] = useState<View>(() => restore('view', 'root') === 'chat' ? 'chat' : 'root');
+  const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
+  const iconRequests = useRef(new Map<string, Promise<string | null>>());
+  const results = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<View>(() => { const saved = restore('view'); return saved === 'chat' || saved === 'quick' ? saved : 'root'; });
   const [query, setQuery] = useState(''), [selected, setSelected] = useState(0), [menu, setMenu] = useState(false), [actionIndex, setActionIndex] = useState(0);
-  const [active, setActive] = useState<string | null>(() => restore('chat') || null), [seed, setSeed] = useState(''), [busy, setBusy] = useState(false);
-  const [loaded, setLoaded] = useState(false), [draft, setDraft] = useState<SavedCommand | null>(null), [commandInput, setCommandInput] = useState('');
+  const [actionQuery, setActionQuery] = useState('');
+  const [active, setActive] = useState<string | null>(() => restore('chat') || null), [seed, setSeed] = useState(() => restore('seed')), [busy, setBusy] = useState(false);
+  const [composerId, setComposerId] = useState(() => restore('composer-id') || crypto.randomUUID());
+  const [loaded, setLoaded] = useState(false), [draft, setDraft] = useState<SavedCommand | null>(null), [commandInput, setCommandInput] = useState(() => restore('command-input'));
+  const [inputReady, setInputReady] = useState(() => restore('input-ready') === 'true');
+  const [needsInput, setNeedsInput] = useState(() => restore('needs-input') === 'true');
+  const [chatSidebar, setChatSidebar] = useState(() => restore('chat-sidebar', 'open') !== 'closed');
+  const [chatFocus, setChatFocus] = useState(0), [rename, setRename] = useState<string | null>(null);
+  const renameDialog = useRef<HTMLDialogElement>(null);
+  const popupEscape = useRef<Event | null>(null);
   const [favorites, setFavorites] = useState<string[]>(() => { try { const value: unknown = JSON.parse(restore('favorites', '[]')); return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string').slice(0, 100) : []; } catch { return []; } });
   const [theme, setTheme] = useState(() => restore('theme', 'dark') === 'light' ? 'light' : 'dark');
-  const search = useRef<HTMLInputElement>(null), panel = useRef<HTMLDivElement>(null), rows = useRef<(HTMLDivElement | null)[]>([]), sendId = useRef<string | null>(null);
+  const search = useRef<HTMLInputElement>(null), panel = useRef<HTMLDivElement>(null), rows = useRef<(HTMLDivElement | null)[]>([]);
   const report = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
   const refresh = useCallback(async () => { const result = await rpc.call('state'); setState(result); setLoaded(true); }, [rpc]);
   useEffect(() => { refresh().catch(report); rpc.call('apps').then(result => setApps(result.map(app => ({ ...app, category: 'app' }))), report); }, [rpc, refresh, report]);
   useRealtime('changed', () => { refresh().catch(report); });
   useEffect(() => { remember('view', view); }, [view]);
   useEffect(() => { remember('chat', active ?? ''); }, [active]);
+  useEffect(() => { remember('composer-id', composerId); }, [composerId]);
+  useEffect(() => { remember('seed', seed); remember('command-input', commandInput); remember('input-ready', String(inputReady)); remember('needs-input', String(needsInput)); }, [seed, commandInput, inputReady, needsInput]);
   useEffect(() => { remember('favorites', JSON.stringify(favorites)); }, [favorites]);
   useEffect(() => { remember('theme', theme); }, [theme]);
-  useEffect(() => { if (menu) panel.current?.focus(); }, [menu]);
+  useEffect(() => { remember('chat-sidebar', chatSidebar ? 'open' : 'closed'); }, [chatSidebar]);
+  useEffect(() => {
+    const narrow = window.matchMedia('(max-width: 700px)');
+    const collapse = () => { if (narrow.matches) setChatSidebar(false); };
+    collapse(); narrow.addEventListener('change', collapse);
+    return () => narrow.removeEventListener('change', collapse);
+  }, []);
+  useEffect(() => {
+    const dialog = renameDialog.current;
+    if (rename !== null && dialog && !dialog.open) dialog.showModal();
+    return () => { if (dialog?.open) dialog.close(); };
+  }, [rename !== null]);
+  useEffect(() => { if (menu) { setActionQuery(''); setActionIndex(0); panel.current?.querySelector('input')?.focus(); } }, [menu]);
   useEffect(() => { if (['root', 'commands', 'history'].includes(view)) search.current?.focus(); }, [view]);
   useEffect(() => { rows.current[selected]?.scrollIntoView({ block: 'nearest' }); }, [selected]);
-  const closeMenu = () => { setMenu(false); search.current?.focus(); };
+  useEffect(() => {
+    if (!results.current) return;
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        const path = (entry.target as HTMLElement).dataset.appPath;
+        if (!path || iconRequests.current.has(path)) continue;
+        const request = rpc.call('appIcon', { path });
+        iconRequests.current.set(path, request);
+        request.then(icon => setAppIcons(previous => ({ ...previous, [path]: icon })), () => { iconRequests.current.delete(path); });
+      }
+    }, { root: results.current, rootMargin: '80px' });
+    results.current.querySelectorAll('[data-app-path]').forEach(element => observer.observe(element));
+    return () => observer.disconnect();
+  }, [rpc, apps.length, query, view]);
+  const conversation = view === 'chat' || view === 'quick';
+  const closeMenu = () => { setMenu(false); setActionQuery(''); if (conversation) setChatFocus(value => value + 1); else search.current?.focus(); };
   function go(next: View) { setMenu(false); setView(next); setQuery(''); setSelected(0); setError(''); }
-  function newChat(prompt = '') { sendId.current = null; setActive(null); setSeed(prompt); go('chat'); }
+  function newChat(prompt = '', surface: 'chat' | 'quick' = 'chat') { setActive(null); setSeed(prompt); setDraft(null); setNeedsInput(false); setCommandInput(''); setInputReady(false); setComposerId(crypto.randomUUID()); go(surface); }
   function edit(command?: SavedCommand) {
     const fresh = command ?? { id: crypto.randomUUID(), title: '', prompt: '', revision: 0 };
     try { const saved = JSON.parse(restore(`command:${fresh.id}`, 'null')); setDraft(saved?.id === fresh.id && typeof saved.title === 'string' && typeof saved.prompt === 'string' && Number.isInteger(saved.revision) ? saved : fresh); } catch { setDraft(fresh); }
@@ -45,12 +89,13 @@ function Raycast() {
   const catalog: CommandInfo[] = view === 'history' ? state.chats.map(chat => ({ id: `chat:${chat.id}`, title: chat.title, subtitle: 'AI Chat', category: 'extension' })) : [
     ...(view === 'root' ? [
       { id: 'ai', title: 'AI Chat', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '✦' },
+      { id: 'quick-ai', title: 'Quick AI', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '✦' },
       { id: 'commands', title: 'Search AI Commands', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '⌘' },
       { id: 'create', title: 'Create AI Command', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '＋' },
       { id: 'history', title: 'Search AI Chats', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '◷' },
     ] : []),
     ...state.commands.map(command => ({ id: `command:${command.id}`, title: command.title, subtitle: 'AI Command', category: 'extension' as const })),
-    ...(view === 'root' ? apps : []),
+    ...(view === 'root' ? apps.map(app => ({ ...app, iconDataUrl: appIcons[app.path ?? ''] ?? undefined })) : []),
   ];
   const filtered = catalog.filter(item => `${item.title} ${item.subtitle ?? ''}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id)));
   const item = filtered[selected];
@@ -59,72 +104,112 @@ function Raycast() {
     if (command.category === 'app' && command.path) {
       setBusy(true); try { await rpc.call('openApp', { path: command.path }); } catch (cause) { report(cause); } finally { setBusy(false); }
     } else if (command.id === 'ai') newChat(query);
+    else if (command.id === 'quick-ai') newChat('', 'quick');
     else if (command.id === 'commands') go('commands');
     else if (command.id === 'create') edit();
     else if (command.id === 'history') go('history');
     else if (command.id.startsWith('chat:')) { setActive(command.id.slice(5)); go('chat'); }
     else if (command.id.startsWith('command:')) {
       const saved = state.commands.find(row => row.id === command.id.slice(8));
-      if (saved) { setCommandInput(''); setDraft(saved); go('chat'); setActive(null); setSeed(saved.prompt); sendId.current = null; }
+      if (saved) { setCommandInput(''); setInputReady(false); setNeedsInput(saved.prompt.includes('{selection}')); setDraft(saved); setComposerId(crypto.randomUUID()); go('chat'); setActive(null); setSeed(saved.prompt); }
     }
   }
-  const actions: LauncherAction[] = item ? [
+  const chat = state.chats.find(row => row.id === active);
+  async function chatAction(action: 'pin' | 'unpin' | 'archive' | 'unarchive' | 'rename', title?: string) {
+    if (!chat || busy) return;
+    setBusy(true);
+    try { await rpc.call('chatAction', { id: chat.id, action, ...(title === undefined ? {} : { title }) }); await refresh(); setError(''); }
+    catch (cause) { report(cause); await refresh().catch(report); throw cause; }
+    finally { setBusy(false); }
+  }
+  const actions: LauncherAction[] = conversation ? [
+    { id: 'new-chat', title: 'New Chat', shortcut: 'Cmd+N', execute: () => newChat('', view === 'quick' ? 'quick' : 'chat') },
+    ...(view === 'quick' ? [{ id: 'continue-chat', title: 'Continue in AI Chat', shortcut: 'Cmd+J', execute: () => go('chat') }] : []),
+    ...(chat?.threadId ? [
+      { id: 'pin-chat', title: chat.pinned ? 'Unpin Chat' : 'Pin Chat', execute: () => chatAction(chat.pinned ? 'unpin' : 'pin') },
+      { id: 'rename-chat', title: 'Rename Chat', execute: () => setRename(chat.title) },
+      { id: 'archive-chat', title: chat.archived ? 'Restore Chat' : 'Archive Chat', execute: () => chatAction(chat.archived ? 'unarchive' : 'archive') },
+    ] : []),
+    { id: 'appearance', title: 'Toggle Appearance', separatorBefore: true, execute: () => setTheme(previous => previous === 'dark' ? 'light' : 'dark') },
+  ] : item && view !== 'edit' ? [
     { id: 'open', title: item.category === 'app' ? 'Open Application' : 'Open Command', shortcut: 'Enter', execute: () => run(item) },
     { id: 'favorite', title: favorites.includes(item.id) ? 'Remove from Favorites' : 'Add to Favorites', shortcut: 'Cmd+F', execute: () => setFavorites(previous => previous.includes(item.id) ? previous.filter(id => id !== item.id) : [...previous, item.id]) },
     ...(item.id.startsWith('command:') ? [{ id: 'edit', title: 'Edit AI Command', shortcut: 'Cmd+E', execute: () => edit(state.commands.find(row => row.id === item.id.slice(8))) }] : []),
     { id: 'theme', title: 'Toggle Appearance', separatorBefore: true, execute: () => setTheme(previous => previous === 'dark' ? 'light' : 'dark') },
   ] : [];
+  const visibleActions = actions.filter(action => action.title.toLocaleLowerCase().includes(actionQuery.toLocaleLowerCase()));
   function keyDown(event: KeyboardEvent) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && ['root', 'commands', 'history'].includes(view)) { event.preventDefault(); setActionIndex(0); setMenu(previous => !previous); return; }
+    if (rename !== null) return;
+    if (event.nativeEvent === popupEscape.current) return;
+    if (event.defaultPrevented) return;
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && ['root', 'commands', 'history', 'chat', 'quick'].includes(view)) { event.preventDefault(); if (menu) closeMenu(); else { setActionIndex(0); setMenu(true); } return; }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n' && conversation) { event.preventDefault(); newChat('', view === 'quick' ? 'quick' : 'chat'); return; }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j' && view === 'quick') { event.preventDefault(); go('chat'); return; }
     if (menu) return;
     if (event.key === 'Escape') { event.preventDefault(); if (query) setQuery(''); else go('root'); search.current?.focus(); return; }
     if (event.target !== search.current) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setSelected(previous => Math.max(0, Math.min(filtered.length - 1, previous + (event.key === 'ArrowDown' ? 1 : -1)))); }
     if (event.key === 'Enter' && item) { event.preventDefault(); void run(item); }
-    if (event.key === 'Tab' && view === 'root' && query) { event.preventDefault(); newChat(query); }
+    if (event.key === 'Tab' && view === 'root' && !event.shiftKey) { event.preventDefault(); newChat(query, 'quick'); }
     if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) { event.preventDefault(); const command = filtered[Number(event.key) - 1]; if (command) void run(command); }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f' && item) { event.preventDefault(); void actions[1].execute(); }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e' && item?.id.startsWith('command:')) { event.preventDefault(); edit(state.commands.find(row => row.id === item.id.slice(8))); }
   }
   async function send(request: NewThreadRequest) {
     if (busy) throw new Error('A send is already pending.');
-    setBusy(true); setError(''); sendId.current ??= crypto.randomUUID();
-    try { const chat = await rpc.call('start', { id: sendId.current, request }); setActive(chat.id); await refresh(); }
+    setBusy(true); setError('');
+    try {
+      remember('composer-id', composerId);
+      if (restore('composer-id') !== composerId) throw new Error('Cannot preserve this draft’s send identity. Enable local storage before sending.');
+      const chat = await rpc.call('start', { id: composerId, request }); setActive(chat.id); await refresh(); }
     catch (cause) { report(cause); await refresh().catch(report); throw cause; }
     finally { setBusy(false); }
   }
-  const chat = state.chats.find(row => row.id === active);
   function updateDraft(value: SavedCommand) { setDraft(value); remember(`command:${value.id}`, JSON.stringify(value)); }
-  return <div className={`vv-raycast-page ${theme}`} onKeyDown={keyDown}>
-    <section className={`rc-window ${view === 'chat' ? 'rc-chat-window' : ''}`} aria-label="Raycast launcher">
+  function captureKeyDown(event: KeyboardEvent) {
+    if (rename !== null) return;
+    const shortcut = (event.metaKey || event.ctrlKey) && ['k', 'j', 'n'].includes(event.key.toLowerCase());
+    // Let native pickers consume Escape before handling the enclosing conversation.
+    const popupOpen = Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"]')).some(element => !element.closest('[inert], [aria-hidden="true"], [data-state="closed"]') && element.getClientRects().length > 0);
+    if (event.key === 'Escape' && popupOpen) popupEscape.current = event.nativeEvent;
+    if (shortcut || (conversation && event.key === 'Escape' && !popupOpen)) { keyDown(event); if (event.defaultPrevented) event.stopPropagation(); }
+  }
+  return <div className={`vv-raycast-page ${theme}`} onKeyDown={keyDown} onKeyDownCapture={captureKeyDown}>
+    <section className={`rc-window ${view === 'chat' ? 'rc-chat-window' : view === 'quick' ? 'rc-quick-window' : ''}`} aria-label="Raycast launcher">
+      {view === 'chat' && chatSidebar && <ChatSidebar chats={state.chats} selected={active} onSelect={chat => { setActive(chat.id); setChatFocus(value => value + 1); }} onNew={() => newChat()} onHide={() => setChatSidebar(false)} onActions={chat => { setActive(chat.id); setActionIndex(0); setMenu(true); }} />}
+      <div className="rc-window-content">
       <header className="rc-search">
-        {view === 'root' && <span className="rc-search-mark" aria-hidden="true">▧</span>}
+        {view === 'root' && <Icon name="vv-raycast/mark" className="rc-search-mark" aria-hidden="true" />}
         {view !== 'root' && <button aria-label="Back to Root Search" title="Back to Root Search" onClick={() => go('root')}>‹</button>}
-        {['root', 'commands', 'history'].includes(view) ? <input ref={search} role="combobox" aria-label={view === 'root' ? 'Search for apps or commands' : view === 'commands' ? 'Search AI Commands' : 'Search AI Chats'} aria-expanded="true" aria-controls="rc-results" aria-activedescendant={item ? `rc-${selected}` : undefined} placeholder={view === 'root' ? 'Search for apps or commands…' : view === 'commands' ? 'Search AI Commands…' : 'Search AI Chats…'} value={query} onChange={event => { setQuery(event.target.value); setSelected(0); }} /> : <strong>{view === 'chat' ? 'AI Chat' : 'Create AI Command'}</strong>}
-        {view === 'root' && <button className="rc-quick-ai" title="Open Quick AI" aria-label="Open Quick AI" onClick={() => newChat(query)}>Quick AI <kbd>⇥</kbd></button>}
+        {view === 'chat' && !chatSidebar && <button title="Show chat history" aria-label="Show chat history" onClick={() => setChatSidebar(true)}><Icon name="PanelLeft" className="rc-icon" /></button>}
+        {['root', 'commands', 'history'].includes(view) ? <input ref={search} role="combobox" aria-label={view === 'root' ? 'Search for apps or commands' : view === 'commands' ? 'Search AI Commands' : 'Search AI Chats'} aria-expanded="true" aria-controls="rc-results" aria-activedescendant={item ? `rc-${selected}` : undefined} placeholder={view === 'root' ? 'Search for apps or commands…' : view === 'commands' ? 'Search AI Commands…' : 'Search AI Chats…'} value={query} onChange={event => { setQuery(event.target.value); setSelected(0); }} /> : <div className="rc-chat-heading"><strong>{conversation ? view === 'quick' ? 'Quick AI' : chat?.title || 'New Chat' : draft?.revision ? 'Edit AI Command' : 'Create AI Command'}</strong>{conversation && chat?.model && <small>{chat.model}</small>}</div>}
+        {view === 'quick' && <button className="rc-continue-chat" title="Continue in AI Chat" aria-description="Click or press Command J to expand this conversation." onClick={() => go('chat')}>AI Chat <kbd>⌘ J</kbd></button>}
+        {conversation && <><button title="Start new chat" aria-label="Start new chat" onClick={() => newChat('', view === 'quick' ? 'quick' : 'chat')}><Icon name="Edit" className="rc-icon" /></button><button title="Show chat actions" aria-label="Show chat actions" onClick={() => { setActionIndex(0); setMenu(true); }}><Icon name="SlidersHorizontal" className="rc-icon" /></button></>}
+        {view === 'root' && <button className="rc-quick-ai" title="Open Quick AI" aria-label="Open Quick AI" onClick={() => newChat(query, 'quick')}>Quick AI <kbd>⇥</kbd></button>}
       </header>
       {error && <div className="rc-error" role="alert">{error} <button title="Refresh saved state" onClick={() => refresh().then(() => setError('')).catch(report)}>Refresh</button></div>}
-      {['root', 'commands', 'history'].includes(view) && <div id="rc-results" role="listbox" aria-label="Commands" className="rc-results">
+      {['root', 'commands', 'history'].includes(view) && <div ref={results} id="rc-results" role="listbox" aria-label="Commands" className="rc-results">
         <div className="rc-section">{query ? 'Results' : view === 'root' ? 'Suggestions' : view === 'history' ? 'AI Chats' : 'AI Commands'}</div>
         {!loaded && <p role="status">Loading…</p>}
-        {filtered.map((command, index) => <div key={command.id} role="presentation">{command.category === 'app' && filtered[index - 1]?.category !== 'app' && <div className="rc-section">Applications</div>}<LauncherCommandRow command={command} flatIndex={index} selected={selected === index} itemRef={element => { rows.current[index] = element; if (element) element.id = `rc-${index}`; }} commandAlias="" commandHotkey="" onClick={() => { setSelected(index); void run(command); }} onContextMenu={event => { event.preventDefault(); setSelected(index); setActionIndex(0); setMenu(true); }} t={key => key} /></div>)}
+        {filtered.map((command, index) => <div key={command.id} role="presentation" data-app-path={command.path}>{command.category === 'app' && filtered[index - 1]?.category !== 'app' && <div className="rc-section">Applications</div>}<LauncherCommandRow command={command} flatIndex={index} selected={selected === index} itemRef={element => { rows.current[index] = element; if (element) element.id = `rc-${index}`; }} commandAlias="" commandHotkey="" onClick={() => { setSelected(index); void run(command); }} onContextMenu={event => { event.preventDefault(); setSelected(index); setActionIndex(0); setMenu(true); }} t={key => key} /></div>)}
         {loaded && !filtered.length && <div className="rc-empty">No results found.<button title="Create AI Command" onClick={() => edit()}>Create AI Command</button></div>}
       </div>}
-      {view === 'chat' && <div className="rc-chat">
-        <nav className="rc-chat-toolbar"><button title="Start new chat" onClick={() => newChat()}>＋ New Chat</button><button title="Search AI Chats" onClick={() => go('history')}>History</button></nav>
-        {chat?.threadId ? <ThreadChat key={chat.threadId} threadId={chat.threadId} variant="compact" layout="contained" permissionPolicy="inherit" /> : chat ? <p role="alert">{chat.error ?? 'Creation is unconfirmed.'} Start a separate chat to send a different request.</p> : loaded && <div className="rc-new-chat"><div className="rc-ai-mark">✦</div><h1>How can I help you?</h1>
-          {seed.includes('{selection}') && <label>Input text<textarea aria-label="AI Command input" value={commandInput} onChange={event => setCommandInput(event.target.value)} /><small>Only text entered here is shared.</small></label>}
-          <NewThreadComposer key={seed + commandInput} initialPrompt={seed.replaceAll('{selection}', commandInput)} draftKey="vv-raycast-new-chat" defaultProjectId={state.personalProjectId} defaultProviderId="codex" defaultModel="gpt-6.1-sol" defaultReasoningLevel="medium" defaultServiceTier="default" defaultPermissionMode="auto" placeholder="Ask AI anything…" layout="document" onSubmit={send} />
+      {conversation && <div className="rc-chat">
+        {chat?.threadId && !chat.unavailable ? <ThreadChat className="rc-bb-chat" key={chat.threadId} threadId={chat.threadId} variant="compact" layout="contained" permissionPolicy="inherit" focusRequest={chatFocus} /> : chat ? <p role="alert">{chat.unavailable ? 'This BB conversation is unavailable. Refresh before continuing.' : chat.error ?? 'Creation is unconfirmed.'} Your saved chat binding is retained.</p> : loaded && <div className="rc-new-chat"><div className="rc-ai-mark">✦</div><h1>How can I help you?</h1>
+          {needsInput && !inputReady ? <form className="rc-command-input" onSubmit={event => { event.preventDefault(); setInputReady(true); setChatFocus(value => value + 1); }}><label>Input text<textarea autoFocus aria-label="AI Command input" value={commandInput} onChange={event => setCommandInput(event.target.value)} /><small>Only text entered here is shared.</small></label><button type="submit" title="Prepare AI Command" aria-description="Click or press Enter to prepare the prompt. Send starts BB execution.">Continue</button></form> : <div className="rc-compose-slot"><NewThreadComposer initialPrompt={needsInput ? seed.replaceAll('{selection}', commandInput) : seed} draftKey={`vv-raycast-composer:${composerId}`} defaultProjectId={state.personalProjectId} defaultProviderId="codex" defaultModel="gpt-6.1-sol" defaultReasoningLevel="medium" defaultServiceTier="default" defaultPermissionMode="auto" placeholder="Ask AI anything…" layout="document" focusRequest={chatFocus} onSubmit={send} /></div>}
         </div>}
       </div>}
-      {view === 'edit' && draft && <form className="rc-form" onSubmit={async event => { event.preventDefault(); if (busy) return; setBusy(true); try { await rpc.call('saveCommand', draft); remember(`command:${draft.id}`, 'null'); await refresh(); go('commands'); } catch (cause) { report(cause); } finally { setBusy(false); } }}>
-        <label>Name<input required maxLength={100} value={draft.title} onChange={event => updateDraft({ ...draft, title: event.target.value })} /></label>
+      {view === 'edit' && draft && <form className="rc-form" onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); event.currentTarget.requestSubmit(); } }} onSubmit={async event => { event.preventDefault(); if (busy) return; setBusy(true); try { await rpc.call('saveCommand', draft); remember(`command:${draft.id}`, 'null'); await refresh(); go('commands'); } catch (cause) { report(cause); } finally { setBusy(false); } }}>
+        <label>Name<input autoFocus required maxLength={100} value={draft.title} onChange={event => updateDraft({ ...draft, title: event.target.value })} /></label>
         <label>Prompt<textarea required maxLength={12000} rows={7} value={draft.prompt} onChange={event => updateDraft({ ...draft, prompt: event.target.value })} /></label>
         <p>Use {'{selection}'} for text you enter when opening this command. Running it opens a draft; Send starts BB execution.</p>
-        <button type="submit" title="Save AI Command" disabled={busy}>{busy ? 'Saving…' : 'Create Command'}</button>
+        <button type="submit" title="Save AI Command" aria-description="Click or press Command Enter to save this prompt." disabled={busy}>{busy ? 'Saving…' : draft.revision ? 'Save Command' : 'Create Command'}</button>
       </form>}
-      <footer className="rc-footer"><span aria-hidden="true" className="rc-logo">▧</span><small>{view === 'chat' ? 'BB server' : '↑↓ Navigate · ↵ Open · Tab Ask AI'}</small><div className="rc-footer-actions">{view === 'root' && query && <button title="Ask AI" onClick={() => newChat(query)}>Ask AI <kbd>⇥</kbd></button>}{actions.length > 0 && <button title="Show Actions" onClick={() => { setActionIndex(0); setMenu(true); }}>Actions <kbd>⌘ K</kbd></button>}</div></footer>
-      {menu && <LauncherActionsOverlay actions={actions} selectedIndex={actionIndex} setSelectedIndex={setActionIndex} overlayRef={panel as React.RefObject<HTMLDivElement>} onClose={closeMenu} onActionClick={async action => { try { await action.execute(); closeMenu(); } catch (cause) { report(cause); } }} isNativeLiquidGlass={false} isGlassyTheme={false} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape' || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k')) { event.preventDefault(); closeMenu(); } if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setActionIndex(previous => (previous + (event.key === 'ArrowDown' ? 1 : actions.length - 1)) % actions.length); } if (event.key === 'Enter') { event.preventDefault(); void Promise.resolve(actions[actionIndex]?.execute()).then(closeMenu, report); } }} />}
+      <footer className="rc-footer"><Icon name="vv-raycast/mark" className="rc-logo" aria-hidden="true" /><small>{conversation ? 'BB server' : '↑↓ Navigate · ↵ Open · Tab Ask AI'}</small><div className="rc-footer-actions">{view === 'root' && query && <button title="Ask AI" onClick={() => newChat(query, 'quick')}>Ask AI <kbd>⇥</kbd></button>}{actions.length > 0 && <button title="Show Actions" onClick={() => { setActionIndex(0); setMenu(true); }}>Actions <kbd>⌘ K</kbd></button>}</div></footer>
+      </div>
+      {rename !== null && <dialog ref={renameDialog} className="rc-rename-dialog" aria-label="Rename Chat" onCancel={() => { setRename(null); setChatFocus(value => value + 1); }}><form onSubmit={async event => { event.preventDefault(); if (busy) return; try { await chatAction('rename', rename); setRename(null); setChatFocus(value => value + 1); } catch {} }}><label>Chat title<input autoFocus required maxLength={100} value={rename} onChange={event => setRename(event.target.value)} /></label>{error && <p role="alert" className="rc-error">{error}</p>}<div><button type="button" title="Cancel rename" onClick={() => { setRename(null); setChatFocus(value => value + 1); }}>Cancel</button><button type="submit" title="Save chat title" disabled={busy || !rename.trim()}>Save</button></div></form></dialog>}
+      {menu && <LauncherActionsOverlay actions={visibleActions} query={actionQuery} onQueryChange={value => { setActionQuery(value); setActionIndex(0); }} selectedIndex={actionIndex} setSelectedIndex={setActionIndex} overlayRef={panel as React.RefObject<HTMLDivElement>} onClose={closeMenu} onActionClick={async action => { try { await action.execute(); closeMenu(); } catch (cause) { report(cause); } }} isNativeLiquidGlass={false} isGlassyTheme={false} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Tab' || event.key === 'Escape' || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k')) { event.preventDefault(); closeMenu(); } if (visibleActions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setActionIndex(previous => (previous + (event.key === 'ArrowDown' ? 1 : visibleActions.length - 1)) % visibleActions.length); } if (event.key === 'Enter') { event.preventDefault(); const action = visibleActions[actionIndex]; if (action) void Promise.resolve(action.execute()).then(closeMenu, report); } }} />}
     </section>
   </div>;
 }
-export default definePluginApp(app => { app.slots.navPanel({ id: 'launcher', title: 'Raycast', icon: 'Command', path: 'launcher', component: Raycast }); });
+export default definePluginApp(app => { app.slots.navPanel({ id: 'launcher', title: 'Raycast', icon: 'vv-raycast/mark', path: 'launcher', component: Raycast }); });

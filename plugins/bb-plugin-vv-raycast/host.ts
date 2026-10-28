@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostContract } from './contract';
+import { appIconData } from './app-icons';
 const run = promisify(execFile);
+const icons = new Map<string, Promise<string | null>>();
 async function apps() {
   if (process.platform !== 'darwin') throw new Error('Application launching currently requires a macOS VV host.');
   const roots = ['/Applications', '/System/Applications', '/System/Applications/Utilities', join(homedir(), 'Applications')];
@@ -25,6 +27,15 @@ export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
     apps,
+    appIcon: async ({ path }, context) => {
+      if (!(await apps()).some(app => app.path === path)) throw new Error('Application is not in this host’s catalog.');
+      let icon = icons.get(path);
+      if (!icon) {
+        icon = appIconData(path, context.signal).catch(error => { icons.delete(path); throw error; });
+        icons.set(path, icon);
+      }
+      return icon;
+    },
     openApp: async ({ path }, context) => {
       if (!(await apps()).some(app => app.path === path)) throw new Error('Application is not in this host’s catalog. Refresh and select it again.');
       await run('/usr/bin/open', ['-a', path], { timeout: 10000, signal: context.signal });

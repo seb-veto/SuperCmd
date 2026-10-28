@@ -6,4 +6,4 @@ export const getCommandAccessoryLabel = (command: CommandInfo) => command.subtit
 export const getCommandDisplayTitle = (command: CommandInfo, _t?: unknown) => command.title;
 export const getCommandTypeBadgeLabel = (command: CommandInfo, _t?: unknown) => command.category === 'app' ? '' : 'Command';
 export const getShortcutDisplayParts = (shortcut: string) => shortcut.replace('Cmd', '⌘').replace('Enter', '↵').split('+');
-export const renderCommandIcon = (command: CommandInfo) => <span aria-hidden="true">{command.iconEmoji ?? (command.category === 'app' ? '▣' : '✦')}</span>;
+export const renderCommandIcon = (command: CommandInfo) => command.iconDataUrl ? <img src={command.iconDataUrl} alt="" className="rc-app-icon" /> : <span aria-hidden="true">{command.iconEmoji ?? (command.category === 'app' ? '▣' : '✦')}</span>;
