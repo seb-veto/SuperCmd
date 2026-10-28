@@ -14,6 +14,6 @@ The `vv_raycast_commands`, `vv_raycast_calculate` and `vv_raycast_files` tools e
 
 Open Raycast in VV for application search, file details/Open/Show in Finder, calculator, Quick AI, AI Chat and saved commands. File selections expire and are checked again before opening. If a file moved, changed identity or became ignored, search again; do not substitute an arbitrary shell path.
 
-Opening an AI command prepares a draft; Send is the explicit execution action. BB retains native models, environments, permissions and approvals. Saved prompts grant no extra access. Do not start conversations, launch apps or open files merely to inspect the library. Unconfirmed initial sends reuse the persisted draft identity and do not retry automatically.
+Opening an AI command prepares a draft; Send is the explicit execution action. In Root Search, Tab or Ask AI with nonempty text submits that question through the native BB composer once ready. Empty Tab opens a blank draft. Do not use nonempty Tab merely to inspect Quick AI. Leaving before submission cancels its one-shot intent, and reload/errors do not replay it. BB retains native models, environments, permissions and approvals. Saved prompts grant no extra access. Do not start conversations, launch apps or open files merely to inspect the library. Unconfirmed initial sends reuse the persisted draft identity and do not retry automatically.
 
 No background clipboard collection, global shortcut takeover, third-party accounts or extension-store installation is enabled. Full Raycast parity remains under qualification.
