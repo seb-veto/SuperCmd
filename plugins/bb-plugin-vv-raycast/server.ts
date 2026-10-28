@@ -1,12 +1,33 @@
 import { createHash } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
+import { quicklinkSchema, type Quicklink } from './quicklink-schema';
+import { resolveQuicklink } from './quicklinks';
 import { calculate } from './calculator';
 import { contract, hostContract, commandSchema, chatSchema, type Chat, type SavedCommand } from './contract';
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   db.prepare('CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL)').run();
   db.prepare('CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, data TEXT NOT NULL)').run();
+  db.prepare('CREATE TABLE IF NOT EXISTS quicklinks (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL)').run();
+  const quicklinks = () => (db.prepare('SELECT data FROM quicklinks ORDER BY rowid DESC').all() as { data: string }[]).map(row => quicklinkSchema.parse(JSON.parse(row.data)));
+  function currentQuicklink(id: string, revision: number) {
+    const saved = quicklinks().find(link => link.id === id);
+    if (!saved || saved.revision !== revision) throw new Error('Quicklink changed elsewhere. Refresh before continuing; your draft is preserved.');
+    return saved;
+  }
+  function saveQuicklink(value: Quicklink) {
+    const link = quicklinkSchema.parse(value);
+    const old = quicklinks().find(row => row.id === link.id);
+    if (old ? old.revision !== link.revision : link.revision !== 0) throw new Error('Quicklink changed elsewhere. Refresh before saving; your draft is preserved.');
+    if (!old && quicklinks().length >= 500) throw new Error('Quicklink library is limited to 500 entries.');
+    const saved = { ...link, tags: [...new Set(link.tags)], revision: link.revision + 1 };
+    const result = old
+      ? db.prepare('UPDATE quicklinks SET revision=?,data=? WHERE id=? AND revision=?').run(saved.revision, JSON.stringify(saved), saved.id, link.revision)
+      : db.prepare('INSERT INTO quicklinks(id,revision,data) VALUES (?,?,?)').run(saved.id, saved.revision, JSON.stringify(saved));
+    if (result.changes !== 1) throw new Error('Quicklink changed elsewhere.');
+    bb.realtime.publish('changed', {}); return saved;
+  }
   const commands = () => (db.prepare('SELECT data FROM commands ORDER BY rowid').all() as { data: string }[]).map(row => commandSchema.parse(JSON.parse(row.data)));
   const chats = () => (db.prepare('SELECT data FROM chats ORDER BY rowid DESC LIMIT 100').all() as { data: string }[]).map(row => chatSchema.parse(JSON.parse(row.data)));
   const commandSummaries = () => commands().map(command => ({ ...command, prompt: command.prompt.slice(0, 1000), truncated: command.prompt.length > 1000 }));
@@ -61,9 +82,21 @@ export default function plugin(bb: BbPluginApi) {
       const projects = await bb.sdk.projects.list({ includePersonal: true });
       const personalProjectId = projects.find(project => project.kind === 'personal')?.id;
       const liveChats = await Promise.all(chats().map(chat => liveChat(chat).catch(() => ({ ...chat, unavailable: true }))));
-      return { commands: commands(), chats: liveChats, projects: projects.filter(project => project.kind !== 'personal' && liveChats.some(chat => chat.projectId === project.id)).map(({ id, name }) => ({ id, name })), ...(personalProjectId ? { personalProjectId } : {}) };
+      return { commands: commands(), quicklinks: quicklinks(), chats: liveChats, projects: projects.filter(project => project.kind !== 'personal' && liveChats.some(chat => chat.projectId === project.id)).map(({ id, name }) => ({ id, name })), ...(personalProjectId ? { personalProjectId } : {}) };
     },
     saveCommand,
+    saveQuicklink,
+    deleteQuicklink: ({ id, revision }) => {
+      currentQuicklink(id, revision);
+      const result = db.prepare('DELETE FROM quicklinks WHERE id=? AND revision=?').run(id, revision);
+      if (result.changes !== 1) throw new Error('Quicklink changed elsewhere.');
+      bb.realtime.publish('changed', {}); return { deleted: true };
+    },
+    resolveQuicklink: ({ id, revision, values }) => ({ target: resolveQuicklink(currentQuicklink(id, revision).link, values) }),
+    openQuicklink: async ({ id, revision, values }) => {
+      const link = currentQuicklink(id, revision);
+      return host.call('openQuicklink', { target: resolveQuicklink(link.link, values), applicationPath: link.applicationPath }, { hostId: await hostId() });
+    },
     start: input => { const operation = queue.then(() => start(input)); queue = operation.catch(() => {}); return operation; },
     chatAction: async input => {
       const row = db.prepare('SELECT data FROM chats WHERE id=?').get(input.id) as { data: string } | undefined;
@@ -87,6 +120,7 @@ export default function plugin(bb: BbPluginApi) {
   }
   bb.cli.register({ name: 'vv-raycast', summary: 'Search local files, calculate, and inspect Raycast AI commands', commands: [
     { name: 'commands', summary: 'List saved AI commands', usage: 'bb vv-raycast commands [--json]' },
+    { name: 'quicklinks', summary: 'List saved Quicklinks without opening them', usage: 'bb vv-raycast quicklinks [--json]' },
     { name: 'chats', summary: 'List saved chat bindings', usage: 'bb vv-raycast chats [--json]' },
     { name: 'calculate', summary: 'Calculate arithmetic or convert units', usage: 'bb vv-raycast calculate "10ft in m" [--json]' },
     { name: 'files', summary: 'Search local indexed file names', usage: 'bb vv-raycast files [query] [--json]' },
@@ -94,11 +128,12 @@ export default function plugin(bb: BbPluginApi) {
     const args = argv.filter(arg => arg !== '--json');
     if (args[0] === 'calculate' && args.length > 1) return { exitCode: 0, stdout: JSON.stringify(calculate(args.slice(1).join(' '))) };
     if (args[0] === 'files') return { exitCode: 0, stdout: JSON.stringify(await searchFiles(args.slice(1).join(' '))) };
-    if (args.length !== 1 || !['commands', 'chats'].includes(args[0])) return { exitCode: 1, stderr: 'Usage: bb vv-raycast commands|chats [--json]' };
-    return { exitCode: 0, stdout: JSON.stringify(args[0] === 'commands' ? commandSummaries() : chats()) };
+    if (args.length !== 1 || !['commands', 'chats', 'quicklinks'].includes(args[0])) return { exitCode: 1, stderr: 'Usage: bb vv-raycast commands|chats|quicklinks [--json]' };
+    return { exitCode: 0, stdout: JSON.stringify(args[0] === 'commands' ? commandSummaries() : args[0] === 'quicklinks' ? quicklinks() : chats()) };
   } });
+  bb.agents.registerTool({ name: 'vv_raycast_quicklinks', description: 'List saved Quicklinks and their explicit argument templates. Does not open destinations or read clipboard content.', parameters: z.object({ query: z.string().max(200).default('') }), execute: async ({ query }) => { const found = quicklinks().filter(link => `${link.title} ${link.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase())); return JSON.stringify({ quicklinks: found.slice(0, 50), truncated: found.length > 50 }); } });
   bb.agents.registerTool({ name: 'vv_raycast_commands', description: 'List saved Raycast AI commands with at most 1,000 prompt characters each and an explicit truncation flag. Does not execute them.', parameters: z.object({}), execute: async () => JSON.stringify(commandSummaries()) });
   bb.agents.registerTool({ name: 'vv_raycast_calculate', description: 'Calculate arithmetic, percentages, functions or unit conversions locally. Returns null for unsupported expressions. No model execution or external requests.', parameters: z.object({ expression: z.string().max(240) }), execute: async ({ expression }) => JSON.stringify(calculate(expression)) });
   bb.agents.registerTool({ name: 'vv_raycast_files', description: 'Find up to 50 local indexed file names in the enrolled primary Mac home folder. Returns metadata only; respects hidden-file and ignore rules. Does not read file contents or open files.', parameters: z.object({ query: z.string().max(200) }), execute: async ({ query }) => JSON.stringify(await searchFiles(query)) });
-  bb.agents.configure(() => ({ tools: ['vv_raycast_commands', 'vv_raycast_calculate', 'vv_raycast_files'], skills: ['vv-raycast'] }));
+  bb.agents.configure(() => ({ tools: ['vv_raycast_quicklinks', 'vv_raycast_commands', 'vv_raycast_calculate', 'vv_raycast_files'], skills: ['vv-raycast'] }));
 }
