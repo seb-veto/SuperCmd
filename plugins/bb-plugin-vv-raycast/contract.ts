@@ -1,0 +1,29 @@
+import { defineRpcContract, type NewThreadRequest } from '@get-bb/plugin-sdk';
+import { z } from 'zod';
+const id = z.string().min(1).max(200);
+export const commandSchema = z.object({ id: z.string().uuid(), title: z.string().trim().min(1).max(100), prompt: z.string().trim().min(1).max(12000), revision: z.number().int().nonnegative() });
+export const chatSchema = z.object({ id: z.string().uuid(), title: z.string(), threadId: z.string().nullable(), error: z.string().optional(), fingerprint: z.string() });
+export type SavedCommand = z.infer<typeof commandSchema>;
+export type Chat = z.infer<typeof chatSchema>;
+// BB remains authoritative for provider, environment, permission and attachment validation.
+export const requestSchema = z.object({
+  projectId: id, providerId: id, model: id, reasoningLevel: z.string().max(100),
+  permissionMode: z.enum(['accept-edits', 'auto', 'full']), serviceTier: z.string().max(100).optional(),
+  sessionOptions: z.record(z.string(), z.json()).optional(),
+  executionInputSources: z.record(z.string(), z.enum(['explicit', 'client-preference'])),
+  environment: z.object({ type: z.enum(['reuse', 'host', 'project-default', 'provider']) }).passthrough(),
+  input: z.array(z.object({ type: z.enum(['text', 'image', 'localImage', 'localFile']) }).passthrough()).min(1).max(100),
+  sendAt: z.number().int().nonnegative().optional(),
+}).refine(value => JSON.stringify(value).length <= 1000000, 'Message is too large') as unknown as z.ZodType<NewThreadRequest>;
+export const appSchema = z.object({ id: z.string(), title: z.string(), path: z.string() });
+export const hostContract = defineRpcContract({
+  apps: { input: z.null(), output: z.array(appSchema) },
+  openApp: { input: z.object({ path: z.string().max(2000) }), output: z.object({ opened: z.boolean() }) },
+});
+export const contract = defineRpcContract({
+  state: { input: z.null(), output: z.object({ commands: z.array(commandSchema), chats: z.array(chatSchema), personalProjectId: z.string().optional() }) },
+  saveCommand: { input: commandSchema, output: commandSchema },
+  start: { input: z.object({ id: z.string().uuid(), request: requestSchema }), output: chatSchema },
+  apps: hostContract.apps,
+  openApp: hostContract.openApp,
+});

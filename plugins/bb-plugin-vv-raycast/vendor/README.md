@@ -1,0 +1,1 @@
+Copied from SuperCmdLabs/SuperCmd at 2da7b9e5dec0199a972a59cece402c85f729d5d7 (MIT, LICENSE retained). Command rows and action-panel rendering are reused with imports adapted to the bounded VV command model. Roles and keyboard help are added. Actual actions use VV RPC and host methods rather than Electron IPC.

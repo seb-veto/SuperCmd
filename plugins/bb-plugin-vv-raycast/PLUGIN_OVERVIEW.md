@@ -1,0 +1,1 @@
+Raycast-style launcher and AI workflows in VV, backed by the existing BB server. Experimental; full visual and capability parity remains under qualification. See README.md for entry, controls and limitations.

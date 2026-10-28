@@ -1,0 +1,72 @@
+import { createHash } from 'node:crypto';
+import type { BbPluginApi } from '@get-bb/plugin-sdk';
+import { z } from 'zod';
+import { contract, hostContract, commandSchema, chatSchema, type Chat, type SavedCommand } from './contract';
+export default function plugin(bb: BbPluginApi) {
+  const db = bb.storage.database();
+  db.prepare('CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL)').run();
+  db.prepare('CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, data TEXT NOT NULL)').run();
+  const commands = () => (db.prepare('SELECT data FROM commands ORDER BY rowid').all() as { data: string }[]).map(row => commandSchema.parse(JSON.parse(row.data)));
+  const chats = () => (db.prepare('SELECT data FROM chats ORDER BY rowid DESC LIMIT 100').all() as { data: string }[]).map(row => chatSchema.parse(JSON.parse(row.data)));
+  const commandSummaries = () => commands().map(command => ({ ...command, prompt: command.prompt.slice(0, 1000), truncated: command.prompt.length > 1000 }));
+  function saveCommand(value: SavedCommand) {
+    const command = commandSchema.parse(value);
+    const old = commands().find(row => row.id === command.id);
+    if (old ? old.revision !== command.revision : command.revision !== 0) throw new Error('Command changed elsewhere. Reload before saving; your draft is preserved.');
+    if (!old && commands().length >= 100) throw new Error('Command library is limited to 100 entries.');
+    const saved = { ...command, revision: command.revision + 1 };
+    const result = old
+      ? db.prepare('UPDATE commands SET revision=?,data=? WHERE id=? AND revision=?').run(saved.revision, JSON.stringify(saved), saved.id, command.revision)
+      : db.prepare('INSERT INTO commands(id,revision,data) VALUES (?,?,?)').run(saved.id, saved.revision, JSON.stringify(saved));
+    if (result.changes !== 1) throw new Error('Command changed elsewhere.');
+    bb.realtime.publish('changed', {});
+    return saved;
+  }
+  let queue: Promise<unknown> = Promise.resolve();
+  async function start(input: z.infer<typeof contract.start.input>) {
+    const fingerprint = createHash('sha256').update(JSON.stringify(input.request)).digest('hex');
+    const old = db.prepare('SELECT data FROM chats WHERE id=?').get(input.id) as { data: string } | undefined;
+    if (old) {
+      const chat = chatSchema.parse(JSON.parse(old.data));
+      if (chat.fingerprint !== fingerprint) throw new Error('This send ID belongs to a different request.');
+      if (!chat.threadId) throw new Error(chat.error ?? 'Creation pending or unconfirmed. No duplicate was created.');
+      return chat;
+    }
+    const title = input.request.input.filter(part => part.type === 'text').map(part => part.text).join(' ').trim().slice(0, 100) || 'AI Chat';
+    const chat: Chat = { id: input.id, title, threadId: null, fingerprint };
+    const persist = () => db.prepare('INSERT INTO chats(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(chat.id, JSON.stringify(chat));
+    persist();
+    try { const thread = await bb.sdk.threads.spawn({ ...input.request, title, pluginMetadata: { raycastChatId: chat.id } }); chat.threadId = thread.id; }
+    catch (cause) { chat.error = `Creation unconfirmed: ${cause instanceof Error ? cause.message : String(cause)}. No automatic retry was made.`; }
+    persist(); bb.realtime.publish('changed', {});
+    if (chat.error) throw new Error(chat.error);
+    return chat;
+  }
+  const host = bb.hosts.experimental_client({ contract: hostContract });
+  async function hostId() {
+    const config = await bb.sdk.system.config();
+    if (!config.primaryHostId) throw new Error('VV has no initialized local host.');
+    return config.primaryHostId;
+  }
+  bb.rpc.register(contract, {
+    state: async () => {
+      const projects = await bb.sdk.projects.list({ includePersonal: true });
+      const personalProjectId = projects.find(project => project.kind === 'personal')?.id;
+      return { commands: commands(), chats: chats(), ...(personalProjectId ? { personalProjectId } : {}) };
+    },
+    saveCommand,
+    start: input => { const operation = queue.then(() => start(input)); queue = operation.catch(() => {}); return operation; },
+    apps: async () => host.call('apps', null, { hostId: await hostId() }),
+    openApp: async input => host.call('openApp', input, { hostId: await hostId() }),
+  });
+  bb.cli.register({ name: 'vv-raycast', summary: 'Inspect Raycast AI commands and BB chat bindings', commands: [
+    { name: 'commands', summary: 'List saved AI commands', usage: 'bb vv-raycast commands [--json]' },
+    { name: 'chats', summary: 'List saved chat bindings', usage: 'bb vv-raycast chats [--json]' },
+  ], run: async argv => {
+    const args = argv.filter(arg => arg !== '--json');
+    if (args.length !== 1 || !['commands', 'chats'].includes(args[0])) return { exitCode: 1, stderr: 'Usage: bb vv-raycast commands|chats [--json]' };
+    return { exitCode: 0, stdout: JSON.stringify(args[0] === 'commands' ? commandSummaries() : chats()) };
+  } });
+  bb.agents.registerTool({ name: 'vv_raycast_commands', description: 'List saved Raycast AI commands with at most 1,000 prompt characters each and an explicit truncation flag. Does not execute them.', parameters: z.object({}), execute: async () => JSON.stringify(commandSummaries()) });
+  bb.agents.configure(() => ({ tools: ['vv_raycast_commands'], skills: ['vv-raycast'] }));
+}
