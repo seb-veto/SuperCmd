@@ -60,6 +60,7 @@ const LauncherActionsOverlay: React.FC<LauncherActionsOverlayProps> = ({
                 role="menuitem"
                 id={`rc-action-${idx}`}
                 aria-label={action.title}
+                aria-description={action.description ?? "Click or press Enter to run this action."}
                 title={action.title}
                 className={`mx-1 px-2.5 py-1.5 rounded-lg border border-transparent flex items-center gap-2.5 cursor-pointer transition-colors ${
                   idx === selectedIndex

@@ -1,7 +1,7 @@
 import { LauncherIcon as Icon } from './launcher-icon';
 import type { ReactNode } from 'react';
 import type { CommandInfo } from './types';
-export type LauncherAction = { id: string; title: string; shortcut?: string; style?: 'default' | 'destructive'; icon?: ReactNode; separatorBefore?: boolean; execute: () => void | Promise<void> };
+export type LauncherAction = { id: string; title: string; description?: string; shortcut?: string; style?: 'default' | 'destructive'; icon?: ReactNode; separatorBefore?: boolean; execute: () => void | Promise<void> };
 export const getCategoryLabel = (category: string, _t?: unknown) => category === 'note' ? 'Note' : category === 'quicklink' ? 'Quicklink' : category === 'app' ? 'Application' : category === 'file' ? 'File' : 'Command';
 export const getCommandAccessoryLabel = (command: CommandInfo) => command.subtitle ?? '';
 export const getCommandDisplayTitle = (command: CommandInfo, _t?: unknown) => command.title;
