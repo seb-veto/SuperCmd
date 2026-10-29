@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Markdown } from '@get-bb/plugin-sdk/app';
+import { noteHistory } from '../note-history';
 import { editableForRange } from '../note-selection';
 import { LauncherIcon as Icon } from '../launcher-icon';
 import { genBlockId, formatNoteBlock, moveNoteBlock, parseMarkdownToBlocks, serializeBlocksToMarkdown, detectMarkdownPrefix, type Block, type BlockType } from './note-blocks';
@@ -207,7 +208,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
   const [blocks, setBlocks] = useState<Block[]>(() => parseMarkdownToBlocks(initialContent));
   const blocksRef = useRef(blocks);
   const containerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { blocksRef.current = blocks; }, [blocks]);
+  React.useLayoutEffect(() => { blocksRef.current = blocks; }, [blocks]);
 
   const [slashMenu, setSlashMenu] = useState<{ blockId: string; position: { top: number; left: number } } | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -220,10 +221,10 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
 
   // ─── Undo / Redo History ───────────────────────────────────
-  const historyRef = useRef<Block[][]>([]);
-  const historyIdxRef = useRef(-1);
+  const historyRef = useRef<ReturnType<typeof noteHistory> | null>(null);
+  if (!historyRef.current) historyRef.current = noteHistory(blocks);
+  const pendingRestoreRef = useRef<Block[] | null>(null);
   const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isUndoRedoRef = useRef(false);
 
   const snapshotBlocks = useCallback((): Block[] => {
     return blocksRef.current.map(b => {
@@ -233,15 +234,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
   }, []);
 
   const pushHistory = useCallback((immediate?: boolean) => {
-    if (isUndoRedoRef.current) return;
-    const push = () => {
-      const snapshot = snapshotBlocks().map(b => ({ ...b }));
-      const stack = historyRef.current.slice(0, historyIdxRef.current + 1);
-      stack.push(snapshot);
-      if (stack.length > 100) stack.shift();
-      historyRef.current = stack;
-      historyIdxRef.current = stack.length - 1;
-    };
+    const push = () => historyRef.current!.record(snapshotBlocks());
     if (immediate) {
       if (historyTimerRef.current) { clearTimeout(historyTimerRef.current); historyTimerRef.current = null; }
       push();
@@ -251,12 +244,6 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
     }
   }, [snapshotBlocks]);
 
-  useEffect(() => {
-    const initial = blocksRef.current.map(b => ({ ...b }));
-    historyRef.current = [initial];
-    historyIdxRef.current = 0;
-  }, []);
-
   React.useLayoutEffect(() => {
     const block = blocksRef.current[blocksRef.current.length - 1];
     const element = block && blockElsRef.current.get(block.id);
@@ -264,39 +251,29 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
     return () => { if (historyTimerRef.current) clearTimeout(historyTimerRef.current); };
   }, []);
 
-  const undo = useCallback(() => {
-    if (historyIdxRef.current <= 0) return;
+  const restoreHistory = useCallback((restored: Block[] | null) => {
+    if (!restored) return;
     if (historyTimerRef.current) { clearTimeout(historyTimerRef.current); historyTimerRef.current = null; }
-    const currentSnapshot = snapshotBlocks().map(b => ({ ...b }));
-    const stack = historyRef.current;
-    stack[historyIdxRef.current] = currentSnapshot;
-    historyIdxRef.current--;
-    const prev = stack[historyIdxRef.current];
-    isUndoRedoRef.current = true;
-    setBlocks(prev.map(b => ({ ...b })));
-    requestAnimationFrame(() => {
-      for (const b of prev) {
-        const el = blockElsRef.current.get(b.id);
-        if (el && el.textContent !== b.content) el.textContent = b.content;
-      }
-      isUndoRedoRef.current = false;
-    });
-  }, [snapshotBlocks]);
-
-  const redo = useCallback(() => {
-    if (historyIdxRef.current >= historyRef.current.length - 1) return;
-    historyIdxRef.current++;
-    const next = historyRef.current[historyIdxRef.current];
-    isUndoRedoRef.current = true;
-    setBlocks(next.map(b => ({ ...b })));
-    requestAnimationFrame(() => {
-      for (const b of next) {
-        const el = blockElsRef.current.get(b.id);
-        if (el && el.textContent !== b.content) el.textContent = b.content;
-      }
-      isUndoRedoRef.current = false;
-    });
+    // Restore existing DOM immediately; the layout commit fills newly mounted blocks.
+    pendingRestoreRef.current = restored;
+    blocksRef.current = restored;
+    for (const block of restored) {
+      const el = blockElsRef.current.get(block.id);
+      if (el && el.textContent !== block.content) el.textContent = block.content;
+    }
+    setBlocks(restored);
   }, []);
+  React.useLayoutEffect(() => {
+    const restored = pendingRestoreRef.current;
+    if (!restored) return;
+    pendingRestoreRef.current = null;
+    for (const block of restored) {
+      const el = blockElsRef.current.get(block.id);
+      if (el && el.textContent !== block.content) el.textContent = block.content;
+    }
+  });
+  const undo = useCallback(() => restoreHistory(historyRef.current!.undo(snapshotBlocks())), [restoreHistory, snapshotBlocks]);
+  const redo = useCallback(() => restoreHistory(historyRef.current!.redo(snapshotBlocks())), [restoreHistory, snapshotBlocks]);
 
   const lastNotified = useRef(serializeBlocksToMarkdown(blocks));
   useEffect(() => {
@@ -375,6 +352,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
   const handleSlashSelect = useCallback((type: BlockType) => {
     if (!slashMenu) return;
     const { blockId } = slashMenu;
+    pushHistory(true);
     const el = blockElsRef.current.get(blockId);
     setSlashMenu(null);
 
@@ -395,7 +373,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
       ));
       focusBlock(blockId, 0);
     }
-  }, [slashMenu, focusBlock]);
+  }, [slashMenu, focusBlock, pushHistory]);
 
   // ─── Key Down Handler ────────────────────────────────────────
   const handleKeyDown = useCallback((e: React.KeyboardEvent, blockId: string) => {
@@ -419,7 +397,6 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
 
       if (['bullet', 'ordered', 'checkbox'].includes(block.type) && !before && !after) {
         setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, type: 'paragraph' } : b));
-        pushHistory(true);
         return;
       }
 
@@ -440,7 +417,6 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
         return updated;
       });
       focusBlock(newBlock.id, 0);
-      pushHistory(true);
       return;
     }
 
@@ -474,7 +450,6 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
             }
           }
         }
-        pushHistory(true);
         return;
       }
     }
@@ -542,18 +517,17 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
     }
 
     // Formatting shortcuts
-    if (meta && !e.shiftKey && !e.altKey && e.key === 'b') { e.preventDefault(); pushHistory(true); wrapSelection('**', '**'); pushHistory(true); return; }
-    if (meta && !e.shiftKey && !e.altKey && e.key === 'i') { e.preventDefault(); pushHistory(true); wrapSelection('*', '*'); pushHistory(true); return; }
-    if (meta && e.shiftKey && e.key === 's') { e.preventDefault(); pushHistory(true); wrapSelection('~~', '~~'); pushHistory(true); return; }
-    if (meta && !e.shiftKey && !e.altKey && e.key === 'e') { e.preventDefault(); pushHistory(true); wrapSelection('`', '`'); pushHistory(true); return; }
-    if (meta && !e.shiftKey && !e.altKey && e.key === 'u') { e.preventDefault(); pushHistory(true); wrapSelection('<u>', '</u>'); pushHistory(true); return; }
+    if (meta && !e.shiftKey && !e.altKey && e.key === 'b') { e.preventDefault(); pushHistory(true); wrapSelection('**', '**'); return; }
+    if (meta && !e.shiftKey && !e.altKey && e.key === 'i') { e.preventDefault(); pushHistory(true); wrapSelection('*', '*'); return; }
+    if (meta && e.shiftKey && e.key === 's') { e.preventDefault(); pushHistory(true); wrapSelection('~~', '~~'); return; }
+    if (meta && !e.shiftKey && !e.altKey && e.key === 'e') { e.preventDefault(); pushHistory(true); wrapSelection('`', '`'); return; }
+    if (meta && !e.shiftKey && !e.altKey && e.key === 'u') { e.preventDefault(); pushHistory(true); wrapSelection('<u>', '</u>'); return; }
 
     if (meta && e.key === 'Enter') {
       if (block.type === 'checkbox') {
         e.preventDefault();
         pushHistory(true);
         setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, checked: !b.checked } : b));
-        pushHistory(true);
         return;
       }
     }
@@ -616,7 +590,6 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
         setCursorPosition(el, offset + prefix.length);
         setBlocks(prev => prev.map(b => b.id === focusedId ? { ...b, content: newText } : b));
       }
-      pushHistory(true);
     },
     insertBlockType: (type: BlockType) => {
       pushHistory(true);
@@ -646,8 +619,9 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
     setDragIdx(null);
     setDropIdx(null);
     if (fromIdx === null || fromIdx === toIdx) return;
+    pushHistory(true);
     setBlocks(prev => moveNoteBlock(prev, fromIdx, toIdx));
-  }, [dragIdx]);
+  }, [dragIdx, pushHistory]);
 
   const handleDragEnd = useCallback(() => {
     setDragIdx(null);
@@ -690,7 +664,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
             <div
               draggable role="group" tabIndex={0} aria-label="Move block" title="Move block"
               aria-description="Drag to reorder. Alt Arrow Up or Down moves this block."
-              onKeyDown={event => { if (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); setBlocks(old => moveNoteBlock(old, idx, idx + (event.key === 'ArrowUp' ? -1 : 1))); } }}
+              onKeyDown={event => { if (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); pushHistory(true); setBlocks(old => moveNoteBlock(old, idx, idx + (event.key === 'ArrowUp' ? -1 : 1))); } }}
               onDragStart={(e) => handleDragStart(e, idx)}
               onDragEnd={handleDragEnd}
               className={`flex-shrink-0 w-5 flex items-center justify-center cursor-grab opacity-0 group-hover:opacity-30 hover:!opacity-60 transition-opacity ${
@@ -708,7 +682,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
               <div className="flex-1 flex items-start gap-1.5 min-w-0" data-block-id={block.id}>
                 {block.type === 'checkbox' && (
                   <button type="button" role="checkbox" aria-checked={Boolean(block.checked)} aria-label="Toggle task" title="Toggle task" aria-description="Click or press Command Enter in the task to change its checked state."
-                    onClick={() => setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, checked: !b.checked } : b))}
+                    onClick={() => { pushHistory(true); setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, checked: !b.checked } : b)); }}
                     className="flex-shrink-0 mt-[3px] w-4 h-4 rounded border-2 flex items-center justify-center transition-colors"
                     style={{
                       borderColor: block.checked ? accentColor : `${accentColor}60`,
