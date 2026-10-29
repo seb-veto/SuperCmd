@@ -12,3 +12,5 @@ extensions/*
 **/.build/*
 .gstack/
 **/AeroSpace-main/**
+# Also ignore a local dependency symlink in isolated plugin worktrees.
+/plugins/bb-plugin-vv-raycast/node_modules
