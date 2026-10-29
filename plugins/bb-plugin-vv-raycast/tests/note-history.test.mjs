@@ -9,6 +9,10 @@ test('Undo captures the first edit before a debounced checkpoint and retains it 
   assert.equal(history.undo(initial), null);
   assert.deepEqual(history.undo(typed), initial);
   assert.deepEqual(history.redo(initial), typed);
+  const pending = [block('First edit plus uncheckpointed typing')];
+  assert.deepEqual(history.undo(pending), typed, 'a pending group must not overwrite the last completed checkpoint');
+  assert.deepEqual(history.redo(typed), pending);
+  assert.deepEqual(history.undo(pending), typed);
   assert.deepEqual(history.undo(typed), initial);
 });
 
