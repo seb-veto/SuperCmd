@@ -298,7 +298,7 @@ function Raycast() {
   const primaryActions: LauncherAction[] = item?.url ? [
     { id: 'open-url', title: 'Open URL', shortcut: 'Enter', description: 'Click or press Enter to open this HTTP or HTTPS address in your default browser.', execute: () => run(item) },
     { id: 'copy-url', title: 'Copy URL', description: 'Click or press Enter to copy the normalized URL to the clipboard without opening it.', execute: () => copy(item.url!) },
-    { id: 'url-quicklink', title: 'Create Quicklink', description: 'Click or press Enter to prepare an unsaved Quicklink for this address.', execute: () => editQuicklink({ id: crypto.randomUUID(), revision: 0, title: new URL(item.url!).hostname, link: item.url!, icon: 'Globe', applicationPath: '', tags: [], pinned: false, hidden: false }) },
+    { id: 'url-quicklink', title: 'Create Quicklink', description: 'Click or press Enter to prepare an unsaved Quicklink for this address.', execute: () => editQuicklink({ id: crypto.randomUUID(), revision: 0, title: new URL(item.url!).hostname.slice(0, 100), link: item.url!, icon: 'Globe', applicationPath: '', tags: [], pinned: false, hidden: false }) },
   ] : item?.quicklink && ['root', 'quicklinks'].includes(view) ? [
     { id: 'open-quicklink', title: 'Open Quicklink', shortcut: 'Enter', execute: () => run(item) },
     { id: 'edit-quicklink', title: 'Edit Quicklink', shortcut: 'Cmd+E', execute: () => editQuicklink(item.quicklink) },
