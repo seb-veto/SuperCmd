@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Markdown } from '@get-bb/plugin-sdk/app';
-import { noteHistory } from '../note-history';
+import { noteHistory, noteHistoryFocus } from '../note-history';
 import { editableForRange } from '../note-selection';
 import { LauncherIcon as Icon } from '../launcher-icon';
 import { genBlockId, formatNoteBlock, moveNoteBlock, parseMarkdownToBlocks, serializeBlocksToMarkdown, detectMarkdownPrefix, type Block, type BlockType } from './note-blocks';
@@ -38,10 +38,6 @@ function focusAndSetCursor(el: HTMLElement, offset: number) {
     sel?.removeAllRanges();
     sel?.addRange(range);
   }
-}
-
-function setCursorPosition(el: HTMLElement, offset: number) {
-  requestAnimationFrame(() => focusAndSetCursor(el, offset));
 }
 
 // ─── Menu Panel Styles (matches clipboard/extension action panels) ───
@@ -256,6 +252,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
     if (historyTimerRef.current) { clearTimeout(historyTimerRef.current); historyTimerRef.current = null; }
     // Restore existing DOM immediately; the layout commit fills newly mounted blocks.
     pendingRestoreRef.current = restored;
+    pendingFocusRef.current = noteHistoryFocus(restored, lastFocusedBlock.current);
     blocksRef.current = restored;
     for (const block of restored) {
       const el = blockElsRef.current.get(block.id);
@@ -294,7 +291,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
     if (!pending) return;
     pendingFocusRef.current = null;
     const element = blockElsRef.current.get(pending.id);
-    if (element) setCursorPosition(element, pending.offset);
+    if (element) focusAndSetCursor(element, pending.offset);
   });
 
   const focusBlock = useCallback((id: string, offset: number) => {
@@ -325,7 +322,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
           focusBlock(newPara.id, 0);
         } else {
           el.textContent = prefix.content;
-          setCursorPosition(el, prefix.content.length);
+          focusAndSetCursor(el, prefix.content.length);
           setBlocks(prev => prev.map(b =>
             b.id === blockId ? { ...b, type: prefix.type, content: prefix.content, checked: prefix.checked } : b
           ));
@@ -587,7 +584,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
         const placeholder = prefix + suffix;
         const newText = text.slice(0, offset) + placeholder + text.slice(offset);
         el.textContent = newText;
-        setCursorPosition(el, offset + prefix.length);
+        focusAndSetCursor(el, offset + prefix.length);
         setBlocks(prev => prev.map(b => b.id === focusedId ? { ...b, content: newText } : b));
       }
     },
@@ -641,7 +638,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ initialContent, onCont
           if (lastBlock && lastBlock.content === '' && lastBlock.type === 'paragraph') {
             // Last block is already an empty paragraph — just focus it
             const el = blockElsRef.current.get(lastBlock.id);
-            if (el) { el.focus(); setCursorPosition(el, 0); }
+            if (el) { el.focus(); focusAndSetCursor(el, 0); }
           } else {
             // Add a new empty paragraph and focus it
             const newBlock: Block = { id: genBlockId(), type: 'paragraph', content: '' };

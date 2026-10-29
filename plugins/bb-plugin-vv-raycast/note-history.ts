@@ -24,3 +24,8 @@ export function noteHistory(initial: Block[]) {
     },
   };
 }
+
+export function noteHistoryFocus(blocks: Block[], preferred: string | null) {
+  const block = blocks.find(block => block.id === preferred && block.type !== 'divider') ?? [...blocks].reverse().find(block => block.type !== 'divider');
+  return block ? { id: block.id, offset: block.content.length } : null;
+}

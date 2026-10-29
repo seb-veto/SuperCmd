@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { noteHistory } from '../note-history.ts';
+import { noteHistory, noteHistoryFocus } from '../note-history.ts';
 
 const block = (content = '', extra = {}) => ({ id: 'a', type: 'paragraph', content, ...extra });
 
@@ -44,4 +44,12 @@ test('History owns snapshots, preserves task/list metadata and keeps a bounded u
   let current = [block('150')], count = 0, previous;
   while ((previous = bounded.undo(current))) { current = previous; count++; }
   assert.equal(count, 99); assert.equal(current[0].content, '51');
+});
+
+test('History restoration keeps an editable focus target when Undo removes the focused block', () => {
+  const restored = [block('first'), block('second', { id: 'b' }), block('', { id: 'divider', type: 'divider' })];
+  assert.deepEqual(noteHistoryFocus(restored, 'a'), { id: 'a', offset: 5 });
+  assert.deepEqual(noteHistoryFocus(restored, 'removed-by-undo'), { id: 'b', offset: 6 });
+  assert.deepEqual(noteHistoryFocus(restored, 'divider'), { id: 'b', offset: 6 });
+  assert.equal(noteHistoryFocus([], 'missing'), null);
 });
