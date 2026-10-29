@@ -106,7 +106,15 @@ export default function plugin(bb: BbPluginApi) {
       if (!row) throw new Error('Chat is not in this Raycast workspace.');
       const chat = chatSchema.parse(JSON.parse(row.data));
       if (!chat.threadId) throw new Error('This chat has no confirmed BB conversation.');
-      if (input.action === 'rename') await bb.sdk.threads.update({ threadId: chat.threadId, title: input.title });
+      if (input.action === 'rename') {
+        if (input.expectedTitle !== undefined) {
+          const native = await bb.sdk.threads.get({ threadId: chat.threadId });
+          const currentTitle = native.title || native.titleFallback || chat.title;
+          if (currentTitle !== input.expectedTitle && currentTitle !== input.title) throw new Error('Chat title changed elsewhere. Your edit is retained; reload the saved title before renaming.');
+          if (currentTitle === input.title) return liveChat(chat);
+        }
+        await bb.sdk.threads.update({ threadId: chat.threadId, title: input.title });
+      }
       else await bb.sdk.threads[input.action]({ threadId: chat.threadId });
       bb.realtime.publish('changed', {});
       return liveChat(chat);

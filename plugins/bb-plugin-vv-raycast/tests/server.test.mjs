@@ -67,6 +67,12 @@ test('chat actions operate only on owned bindings and read native BB state', asy
     assert.equal(harness.inspection.sdk.callsTo('threads.pin').length, 0);
     assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'pin' })).pinned, true);
     assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'rename', title: 'Renamed' })).title, 'Renamed');
+    const updates = harness.inspection.sdk.callsTo('threads.update').length;
+    await assert.rejects(harness.behavior.callRpc('chatAction', { id, action: 'rename', title: 'Stale edit', expectedTitle: 'Original title' }), /changed elsewhere/);
+    assert.equal(harness.inspection.sdk.callsTo('threads.update').length, updates, 'stale settings draft must not update BB');
+    assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'rename', title: 'Renamed', expectedTitle: 'Original title' })).title, 'Renamed');
+    assert.equal(harness.inspection.sdk.callsTo('threads.update').length, updates, 'acknowledged matching title reconciles a lost response without another update');
+    assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'rename', title: 'Saved settings title', expectedTitle: 'Renamed' })).title, 'Saved settings title');
     assert.equal((await harness.behavior.callRpc('chatAction', { id, action: 'archive' })).archived, true);
     native.title = 'Changed from native BB';
     native.environmentId = 'native-environment';

@@ -38,7 +38,7 @@ export const contract = defineRpcContract({
   resolveQuicklink: { input: quicklinkInput, output: z.object({ target: z.string() }) },
   openQuicklink: { input: quicklinkInput, output: z.object({ opened: z.boolean() }) },
   start: { input: z.object({ id: z.string().uuid(), request: requestSchema }), output: chatSchema },
-  chatAction: { input: z.object({ id: z.string().uuid(), action: z.enum(['pin', 'unpin', 'archive', 'unarchive', 'rename']), title: z.string().trim().min(1).max(100).optional() }).refine(input => input.action !== 'rename' || Boolean(input.title), 'Enter a chat title'), output: chatSchema },
+  chatAction: { input: z.object({ id: z.string().uuid(), action: z.enum(['pin', 'unpin', 'archive', 'unarchive', 'rename']), title: z.string().trim().min(1).max(100).optional(), expectedTitle: z.string().optional() }).refine(input => input.action !== 'rename' || Boolean(input.title), 'Enter a chat title'), output: chatSchema },
   apps: hostContract.apps,
   appIcon: hostContract.appIcon,
   openApp: hostContract.openApp,
