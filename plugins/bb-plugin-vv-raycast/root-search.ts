@@ -70,13 +70,13 @@ export function rankRootCommands(items: CommandInfo[], query: string, preference
     const aliasTier = root && normalized && alias ? alias === normalized ? 3 : alias.startsWith(normalized) ? 2 : 0 : 0;
     // shortcut: file and body-note hits are already filtered by their authoritative searches; richer match metadata can replace this fallback.
     const external = item.category === 'file' || item.category === 'note';
-    if (query.trim() && !aliasTier && !title.matched && !secondary.matched && !external && item.category !== 'calculator') return [];
+    if (query.trim() && !aliasTier && !title.matched && !secondary.matched && !external && item.category !== 'calculator' && !item.url) return [];
     const favorite = root && !query.trim() ? favorites.indexOf(id) : -1;
     return [{ item, index, favorite, calculator: item.category === 'calculator', tier: aliasTier || (title.matched ? 1 : 0), kind: title.matched ? kinds[title.matchKind] : 0, score: (title.matched ? title.matchScore : secondary.matchScore) + (root ? learnedScore(preferences, id, query, now) : 0) }];
   });
   scored.sort((a, b) => {
     if (!query.trim()) return (a.favorite < 0 ? 1 : 0) - (b.favorite < 0 ? 1 : 0) || (a.favorite >= 0 && b.favorite >= 0 ? a.favorite - b.favorite : 0) || Number(b.item.quicklink?.pinned ?? false) - Number(a.item.quicklink?.pinned ?? false) || b.score - a.score || a.index - b.index;
-    return Number(b.calculator) - Number(a.calculator) || b.tier - a.tier || b.kind - a.kind || b.score - a.score || a.index - b.index;
+    return Number(Boolean(b.item.url)) - Number(Boolean(a.item.url)) || Number(b.calculator) - Number(a.calculator) || b.tier - a.tier || b.kind - a.kind || b.score - a.score || a.index - b.index;
   });
   return scored.map(result => result.item);
 }

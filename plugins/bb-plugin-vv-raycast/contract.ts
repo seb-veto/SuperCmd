@@ -22,6 +22,7 @@ export const fileSchema = z.object({ id: z.string().uuid(), title: z.string(), p
 export const calculationSchema = z.object({ input: z.string(), result: z.string(), kind: z.enum(['math', 'unit']), inputLabel: z.string(), resultLabel: z.string() });
 const quicklinkInput = z.object({ id: z.string().uuid(), revision: z.number().int().nonnegative(), values: z.record(z.string().max(100), z.string().max(2000)).refine(values => Object.keys(values).length <= 10, 'Too many argument values').default({}) });
 export const hostContract = defineRpcContract({
+  openUrl: { input: z.object({ input: z.string().max(4096) }), output: z.object({ opened: z.boolean() }) },
   openQuicklink: { input: z.object({ target: z.string().max(16000), applicationPath: z.string().max(2000) }), output: z.object({ opened: z.boolean() }) },
   apps: { input: z.null(), output: z.array(appSchema) },
   appIcon: { input: z.object({ path: z.string().max(2000) }), output: z.string().max(140000).nullable() },
@@ -39,6 +40,7 @@ export const contract = defineRpcContract({
   openQuicklink: { input: quicklinkInput, output: z.object({ opened: z.boolean() }) },
   start: { input: z.object({ id: z.string().uuid(), request: requestSchema }), output: chatSchema },
   chatAction: { input: z.object({ id: z.string().uuid(), action: z.enum(['pin', 'unpin', 'archive', 'unarchive', 'rename']), title: z.string().trim().min(1).max(100).optional(), expectedTitle: z.string().optional() }).refine(input => input.action !== 'rename' || Boolean(input.title), 'Enter a chat title'), output: chatSchema },
+  openUrl: hostContract.openUrl,
   apps: hostContract.apps,
   appIcon: hostContract.appIcon,
   openApp: hostContract.openApp,

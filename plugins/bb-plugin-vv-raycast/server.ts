@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { quicklinkSchema, type Quicklink } from './quicklink-schema';
 import { noteHandlers } from './note-server';
 import { resolveQuicklink } from './quicklinks';
+import { requireBrowserUrl } from './browser-url';
 import { calculate } from './calculator';
 import { contract, hostContract, commandSchema, chatSchema, type Chat, type SavedCommand } from './contract';
 export default function plugin(bb: BbPluginApi) {
@@ -119,6 +120,7 @@ export default function plugin(bb: BbPluginApi) {
       bb.realtime.publish('changed', {});
       return liveChat(chat);
     },
+    openUrl: async ({ input }) => host.call('openUrl', { input: requireBrowserUrl(input) }, { hostId: await hostId() }),
     apps: async () => host.call('apps', null, { hostId: await hostId() }),
     appIcon: async input => host.call('appIcon', input, { hostId: await hostId() }),
     openApp: async input => host.call('openApp', input, { hostId: await hostId() }),

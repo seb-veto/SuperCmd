@@ -23,6 +23,7 @@ import type { NoteSummary } from './note-autosave';
 import { assignRootAlias, moveRootFavorite, rankRootCommands, readRootPreferences, recordRootLaunch, resetRootRanking, rootAlias, rootKey, selectedRootIndex, type RootPreferences } from './root-search';
 import { LauncherSettings } from './launcher-settings';
 import { readWindowMode, collapsedRoot, expandsCompactRoot, type WindowMode } from './window-mode';
+import { resolveBrowserUrl } from './browser-url';
 import './style.css';
 
 const remember = (key: string, value: string) => { try { localStorage.setItem(`vv-raycast:${key}`, value); } catch {} };
@@ -101,7 +102,7 @@ function Raycast() {
     catch { throw new Error('Cannot save Favorites. Local storage is unavailable.'); }
   }
   function recordLaunch(command: CommandInfo) {
-    if (view !== 'root' || command.category === 'calculator') return;
+    if (view !== 'root' || ['calculator', 'url'].includes(command.category)) return;
     try { saveRootPreferences(recordRootLaunch(rootPreferencesRef.current, rootKey(command), query)); } catch (cause) { report(cause); }
   }
   function editAlias(command: CommandInfo) { setAliasTarget(command); setAliasDraft(rootAlias(rootPreferences, rootKey(command))); setAliasError(''); }
@@ -218,7 +219,9 @@ function Raycast() {
   const quicklinkItems: CommandInfo[] = state.quicklinks.filter(link => (view !== 'root' || !link.hidden) && (view !== 'quicklinks' || !quicklinkTag || link.tags.includes(quicklinkTag))).map(link => ({ id: `quicklink:${link.id}`, title: link.title, subtitle: link.tags.join(' · ') || link.link, category: 'quicklink', quicklink: link }));
   function openNotes(id?: string, create = false, search = false) { setNoteTarget({ ...(id ? { id } : {}), create, search, key: crypto.randomUUID() }); go('notes'); }
   const fileItems: CommandInfo[] = (fileQuery === query.trim() ? files : []).map(file => ({ id: `file:${file.id}`, title: file.title, subtitle: file.subtitle, category: 'file', path: file.path, file }));
+  const directUrl = view === 'root' ? resolveBrowserUrl(query) : null;
   const catalog: CommandInfo[] = view === 'quicklinks' ? quicklinkItems : view === 'history' ? state.chats.map(chat => ({ id: `chat:${chat.id}`, title: chat.title, subtitle: 'AI Chat', category: 'extension' })) : view === 'files' ? fileItems : [
+    ...(directUrl ? [{ id: 'open-url', title: `Open ${directUrl.url}`, subtitle: 'Default browser', category: 'url' as const, url: directUrl.url }] : []),
     ...(view === 'root' && calculation && calculationQuery === query.trim() ? [{ id: 'calculator', title: calculation.result, category: 'calculator' as const }] : []),
     ...(view === 'root' ? [
       { id: 'ai', title: 'AI Chat', subtitle: 'Raycast AI', category: 'extension' as const, iconEmoji: '✦' },
@@ -256,7 +259,8 @@ function Raycast() {
   }
   async function run(command: CommandInfo) {
     if (busy) return;
-    if (command.note) { recordLaunch(command); openNotes(command.note.id); }
+    if (command.url) { setBusy(true); setError(''); try { await rpc.call('openUrl', { input: command.url }); setNotice('Opened URL'); } catch (cause) { report(cause); } finally { setBusy(false); } }
+    else if (command.note) { recordLaunch(command); openNotes(command.note.id); }
     else if (command.quicklink) { if (quicklinkFields(command.quicklink.link).length) { setError(''); setQuicklinkPrompt(command.quicklink); } else await openQuicklink(command.quicklink); }
     else if (command.category === 'calculator' && calculation) { await copy(calculation.result).catch(report); }
     else if (command.file) { await openFile(command.file).catch(() => {}); }
@@ -291,7 +295,11 @@ function Raycast() {
     catch (cause) { report(cause); await refresh().catch(report); throw cause; }
     finally { setBusy(false); }
   }
-  const primaryActions: LauncherAction[] = item?.quicklink && ['root', 'quicklinks'].includes(view) ? [
+  const primaryActions: LauncherAction[] = item?.url ? [
+    { id: 'open-url', title: 'Open URL', shortcut: 'Enter', description: 'Click or press Enter to open this HTTP or HTTPS address in your default browser.', execute: () => run(item) },
+    { id: 'copy-url', title: 'Copy URL', description: 'Click or press Enter to copy the normalized URL to the clipboard without opening it.', execute: () => copy(item.url!) },
+    { id: 'url-quicklink', title: 'Create Quicklink', description: 'Click or press Enter to prepare an unsaved Quicklink for this address.', execute: () => editQuicklink({ id: crypto.randomUUID(), revision: 0, title: new URL(item.url!).hostname, link: item.url!, icon: 'Globe', applicationPath: '', tags: [], pinned: false, hidden: false }) },
+  ] : item?.quicklink && ['root', 'quicklinks'].includes(view) ? [
     { id: 'open-quicklink', title: 'Open Quicklink', shortcut: 'Enter', execute: () => run(item) },
     { id: 'edit-quicklink', title: 'Edit Quicklink', shortcut: 'Cmd+E', execute: () => editQuicklink(item.quicklink) },
     { id: 'duplicate-quicklink', title: 'Duplicate Quicklink', execute: () => editQuicklink(item.quicklink, true) },
@@ -324,7 +332,7 @@ function Raycast() {
     { id: 'theme', title: 'Toggle Appearance', separatorBefore: true, execute: () => setTheme(previous => previous === 'dark' ? 'light' : 'dark') },
   ] : [];
   const itemKey = item ? rootKey(item) : '', favoriteIndex = favorites.indexOf(itemKey);
-  const actions: LauncherAction[] = [...primaryActions, ...(view === 'root' ? [{ id: 'launcher-settings', title: 'Open Settings', shortcut: 'Cmd+,', description: 'Click or press Enter to change the launcher window mode. No command is launched.', separatorBefore: true, execute: () => go('settings') }] : []), ...(view === 'root' && item && item.category !== 'calculator' ? [
+  const actions: LauncherAction[] = [...primaryActions, ...(view === 'root' ? [{ id: 'launcher-settings', title: 'Open Settings', shortcut: 'Cmd+,', description: 'Click or press Enter to change the launcher window mode. No command is launched.', separatorBefore: true, execute: () => go('settings') }] : []), ...(view === 'root' && item && !['calculator', 'url'].includes(item.category) ? [
     { id: 'favorite', title: favoriteIndex < 0 ? 'Add to Favorites' : 'Remove from Favorites', shortcut: 'Cmd+F', description: 'Click or press Enter to change whether this item appears in the empty Root Search Favorites section.', separatorBefore: true, execute: () => { if (favoriteIndex < 0 && favorites.length >= 100) throw new Error('Favorites limit reached. Remove a favorite first.'); saveFavorites(favoriteIndex < 0 ? [...favorites, itemKey] : favorites.filter(id => id !== itemKey)); } },
     ...(favoriteIndex > 0 ? [{ id: 'favorite-up', title: 'Move Favorite Up', description: 'Click or press Enter to move this favorite one position earlier.', execute: () => saveFavorites(moveRootFavorite(favorites, itemKey, -1)) }] : []),
     ...(favoriteIndex >= 0 && favoriteIndex < favorites.length - 1 ? [{ id: 'favorite-down', title: 'Move Favorite Down', description: 'Click or press Enter to move this favorite one position later.', execute: () => saveFavorites(moveRootFavorite(favorites, itemKey, 1)) }] : []),

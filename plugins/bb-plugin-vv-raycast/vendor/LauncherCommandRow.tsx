@@ -43,7 +43,8 @@ const LauncherCommandRow: React.FC<LauncherCommandRowProps> = ({
       role="option"
       aria-selected={selected}
       aria-label={command.title}
-      title={command.category === 'file' ? 'Open selected file' : 'Open selected command'}
+      aria-description={command.url ? 'Click, press Enter or Space to open this address in your default browser. Command K opens URL actions.' : undefined}
+      title={command.url ? 'Open URL' : command.category === 'file' ? 'Open selected file' : 'Open selected command'}
       tabIndex={selected ? 0 : -1}
       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.currentTarget.click(); } }}
       className={`command-item px-3 py-2 rounded-lg cursor-pointer ${

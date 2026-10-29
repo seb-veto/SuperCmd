@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { hostContract } from './contract';
 import { appIconData } from './app-icons';
 import { quicklinkOpener } from './quicklink-host';
+import { requireBrowserUrl } from './browser-url';
 import { createFileSearch } from './files';
 import { getFileSearchIndexStatus, rebuildFileSearchIndex, searchIndexedFiles, stopFileSearchIndexing } from '../../src/main/file-search-index';
 export { quicklinkOpener } from './quicklink-host';
@@ -40,6 +41,7 @@ export default experimental_defineHostEntry({
   dispose: async () => { stopFileSearchIndexing(); await indexLease?.dispose(); },
   handlers: {
     apps,
+    openUrl: ({ input }, context) => quicklinkOpener(homedir(), apps, run)(requireBrowserUrl(input), '', context.signal),
     openQuicklink: ({ target, applicationPath }, context) => quicklinkOpener(homedir(), apps, run)(target, applicationPath, context.signal),
     files: async ({ query }, context) => {
       const result = await fileSearch.search(query, context.signal);
